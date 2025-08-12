@@ -1,13 +1,12 @@
 """
 Streamlit front‑end that talks to TWO n8n workflows:
-1) Active Fires (returns daily status + optional CSV)
+1) Active Fires (returns daily status + optional CSV + HTML summary)
 2) Forest Risk Summary (weather + AI summary per city)
 
 How to use:
 - Put this file in your repo as app.py
-- Add the two webhook URLs as Streamlit secrets or environment variables:
-    N8N_FIRES_URL, N8N_RISK_URL
-  (optionally add N8N_SHARED_SECRET if your workflows check a header)
+- Add the webhook URLs as Streamlit secrets or environment variables:
+    N8N_FIRES_URL, N8N_RISK_URL, N8N_SHARED_SECRET (optional)
 - requirements.txt should include: streamlit, requests, pandas
 - Deploy on Streamlit Cloud and set the secrets under app settings.
 """
@@ -20,6 +19,7 @@ from typing import List, Dict, Any
 import requests
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 # ---------- CONFIG ----------
 st.set_page_config(page_title="Acadian Forest – Fire & Risk Assistant", page_icon="🌲", layout="wide")
@@ -40,7 +40,6 @@ DEFAULT_CITIES = [
 def _headers(secret: str | None) -> Dict[str, str]:
     h = {"Content-Type": "application/json"}
     if secret:
-        # Your n8n workflow can check this header to accept or reject requests
         h["X-API-KEY"] = secret
     return h
 
@@ -52,8 +51,9 @@ def call_fires_endpoint(url: str, secret: str | None) -> Dict[str, Any]:
     """POST to the Active Fires workflow. Expected JSON return shape:
     {
       "has_new_fires": bool,          # optional
-      "fires_today": int,             # optional
+      "fires_today": int,             # optional (we map to active fires)
       "summary": "...",               # text for UI
+      "summary_html": "...",          # optional HTML designed for email-like layout
       "csv_base64": "...",            # optional base64 CSV
       "csv_filename": "filtered_acadian_fires.csv"  # optional
     }
@@ -63,30 +63,15 @@ def call_fires_endpoint(url: str, secret: str | None) -> Dict[str, Any]:
     return resp.json()
 
 def call_risk_endpoint(url: str, cities: List[str], question: str, detail: str, secret: str | None) -> Dict[str, Any]:
-    """POST to the Forest Risk Summary workflow. Expected JSON return shape:
-    {
-      "reply": "AI written summary",
-      "cities": ["Fredericton,CA", ...],
-      "metrics": [
-          {"city": "Fredericton,CA", "temp": 22, "humidity": 55, "precip": 1.2,
-           "fire_risk": "Moderate", "flood_risk": "Low"}, ...
-      ]
-    }
-    """
-    payload = {
-        "cities": cities,
-        "question": question,
-        "detail": detail,
-        "from": "streamlit"
-    }
+    payload = {"cities": cities, "question": question, "detail": detail, "from": "streamlit"}
     resp = requests.post(url, headers=_headers(secret), json=payload, timeout=90)
     resp.raise_for_status()
     return resp.json()
 
 # ---------- SIDEBAR ----------
 st.sidebar.title("🔌 Connections")
-fires_url = st.sidebar.text_input("Active Fires webhook URL", value=N8N_FIRES_URL_DEFAULT, type="default", help="The Production URL from your n8n Webhook node in the Active Fires workflow.")
-risk_url = st.sidebar.text_input("Forest Risk webhook URL", value=N8N_RISK_URL_DEFAULT, type="default", help="The Production URL from your n8n Webhook node in the Risk Summary workflow.")
+fires_url = st.sidebar.text_input("Active Fires webhook URL", value=N8N_FIRES_URL_DEFAULT, type="default")
+risk_url = st.sidebar.text_input("Forest Risk webhook URL", value=N8N_RISK_URL_DEFAULT, type="default")
 shared_secret = st.sidebar.text_input("Optional shared secret (X-API-KEY)", value=N8N_SHARED_SECRET_DEFAULT, type="password")
 
 st.sidebar.markdown("—")
@@ -100,11 +85,13 @@ fires_tab, risk_tab = st.tabs(["🔥 Active Fires", "🛰️ Forest Risk Summary
 
 with fires_tab:
     st.subheader("Check today's active fires in the Acadian region")
-    st.write("This calls your n8n *Active Fires* workflow and shows the summary. Your daily email workflow remains separate.")
+    st.write("This calls your n8n *Active Fires* workflow and shows a nicely formatted report. Your daily email workflow remains separate.")
     disabled = not bool(fires_url)
     if disabled:
         st.warning("Add the Active Fires webhook URL in the sidebar to enable this.")
-    if st.button("Run active fires check", type="primary", disabled=disabled):
+
+    run = st.button("Run active fires check", type="primary", disabled=disabled)
+    if run:
         with st.spinner("Contacting n8n …"):
             try:
                 data = call_fires_endpoint(fires_url, shared_secret or None)
@@ -112,14 +99,21 @@ with fires_tab:
                 st.error(f"Request failed: {e}")
             else:
                 st.success("Received response from n8n")
-                st.write(data.get("summary", "(No summary text returned)"))
-                # Show metrics if present
+
+                # 1) Render email-style HTML if provided, otherwise show plain text
+                if isinstance(data.get("summary_html"), str) and data["summary_html"].strip():
+                    components.html(data["summary_html"], height=620, scrolling=True)
+                else:
+                    st.write(data.get("summary", "(No summary text returned)"))
+
+                # 2) Metrics row
                 cols = st.columns(3)
                 if "fires_today" in data:
                     cols[0].metric("Fires today", data.get("fires_today"))
                 if "has_new_fires" in data:
                     cols[1].metric("New fires?", "Yes" if data.get("has_new_fires") else "No")
-                # CSV download if provided
+
+                # 3) CSV download if provided
                 if data.get("csv_base64"):
                     try:
                         csv_bytes = base64.b64decode(data["csv_base64"])  # bytes
@@ -149,9 +143,7 @@ with risk_tab:
                     except Exception as e:
                         st.error(f"Request failed: {e}")
                     else:
-                        # Text reply from the AI agent
                         st.write(data.get("reply", "(No reply text returned)"))
-                        # Tabular metrics if provided
                         if isinstance(data.get("metrics"), list) and data["metrics"]:
                             try:
                                 df = pd.DataFrame(data["metrics"])  # expect columns: city,temp,humidity,precip,fire_risk,flood_risk
@@ -163,6 +155,6 @@ with risk_tab:
 st.markdown("""
 ---
 **Notes**
-- This front‑end is read‑only: it calls your n8n webhooks and displays responses. Your existing scheduled emails remain unchanged.
-- For security, prefer to keep your n8n behind authentication and validate an `X-API-KEY` header in the workflow.
+- The Active Fires tab renders HTML from your n8n summary so it matches your email styling. If HTML is missing, it falls back to plain text.
+- For security, prefer to keep n8n behind authentication and validate an `X-API-KEY` header in the workflows.
 """)
