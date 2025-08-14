@@ -124,12 +124,34 @@ with fires_tab:
 
 with risk_tab:
     st.subheader("Ask for risk summaries by city")
+
     left, right = st.columns([0.55, 0.45])
+
     with left:
-        cities = st.multiselect("Cities", options=_cities_options(), default=["Fredericton,CA", "Halifax,CA"])
-        detail = st.radio("Detail level", ["short", "detailed"], horizontal=True)
-        question = st.text_area("Optional question for the AI (e.g., 'Focus on wind and precipitation'). Leave blank for a general summary.", height=80)
+        # Cities from your helper; default to a single city
+        cities = st.multiselect(
+            "Cities",
+            options=_cities_options(),
+            default=["Fredericton,CA"]
+        )
+
+        detail = st.radio("Detail level", ["short", "detailed"], index=0, horizontal=True)
+
+        # NEW: explicit focus picker (no free text)
+        focus_topics = st.multiselect(
+            "Focus on (choose one or more, or leave blank for a general summary)",
+            options=["Precipitation", "Humidity", "Temperature", "Fire risk", "Flood risk"],
+            help="If you pick topics, the AI will focus ONLY on these. Otherwise it gives a general summary."
+        )
+
+        # Build strict instruction for the backend/AI
+        if focus_topics:
+            question = "Focus ONLY on: " + ", ".join(focus_topics) + ". Do NOT include other topics."
+        else:
+            question = ""
+
         go = st.button("Get risk summary", type="primary", disabled=not bool(risk_url))
+
     with right:
         if not risk_url:
             st.warning("Add the Forest Risk webhook URL in the sidebar to enable this.")
@@ -143,10 +165,20 @@ with risk_tab:
                     except Exception as e:
                         st.error(f"Request failed: {e}")
                     else:
-                        st.write(data.get("reply", "(No reply text returned)"))
+                        # Prefer any of these keys; render as Markdown to keep headings/sections
+                        reply = (
+                            data.get("reply")
+                            or data.get("text")
+                            or data.get("summary")
+                            or data.get("message")
+                            or "(No reply text returned)"
+                        )
+                        st.markdown(reply)
+
+                        # Optional: show returned metrics table if present
                         if isinstance(data.get("metrics"), list) and data["metrics"]:
                             try:
-                                df = pd.DataFrame(data["metrics"])  # expect columns: city,temp,humidity,precip,fire_risk,flood_risk
+                                df = pd.DataFrame(data["metrics"])
                                 st.dataframe(df, use_container_width=True)
                             except Exception:
                                 st.info("Metrics were returned but could not be rendered as a table.")
