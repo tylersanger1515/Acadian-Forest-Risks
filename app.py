@@ -1,5 +1,5 @@
 """
-Streamlit front‑end that talks to TWO n8n workflows:
+Streamlit front-end that talks to TWO n8n workflows:
 1) Active Fires (returns daily status + optional CSV + HTML summary)
 2) Forest Risk Summary (weather + AI summary per city)
 
@@ -62,11 +62,29 @@ def call_fires_endpoint(url: str, secret: str | None) -> Dict[str, Any]:
     resp.raise_for_status()
     return resp.json()
 
-def call_risk_endpoint(url: str, cities: List[str], question: str, detail: str, secret: str | None) -> Dict[str, Any]:
-    payload = {"cities": cities, "question": question, "detail": detail, "from": "streamlit"}
+# ✅ UPDATED: accept `focus` list and include it in the payload
+def call_risk_endpoint(
+    url: str,
+    cities: List[str],
+    question: str,
+    detail: str,
+    focus: List[str],                # <— NEW PARAM
+    secret: str | None
+) -> Dict[str, Any]:
+    payload = {
+        "cities": cities,
+        "question": question,        # optional free text
+        "detail": detail,
+        "focus": focus,              # <— SEND FOCUS AS JSON ARRAY
+        "from": "streamlit",
+    }
     resp = requests.post(url, headers=_headers(secret), json=payload, timeout=90)
     resp.raise_for_status()
-    return resp.json()
+    # Some n8n nodes return plain text; keep robust
+    try:
+        return resp.json()
+    except Exception:
+        return {"reply": resp.text}
 
 # ---------- SIDEBAR ----------
 st.sidebar.title("🔌 Connections")
@@ -79,7 +97,7 @@ st.sidebar.caption("Tip: keep secrets in Streamlit → App → Settings → Secr
 
 # ---------- UI ----------
 st.title("🌲 Acadian Forest – Fire & Risk Assistant")
-st.caption("Chat-style front‑end that calls your n8n workflows for live data and AI summaries.")
+st.caption("Chat-style front-end that calls your n8n workflows for live data and AI summaries.")
 
 fires_tab, risk_tab = st.tabs(["🔥 Active Fires", "🛰️ Forest Risk Summary"])
 
@@ -137,14 +155,14 @@ with risk_tab:
 
         detail = st.radio("Detail level", ["short", "detailed"], index=0, horizontal=True)
 
-        # NEW: explicit focus picker (no free text)
+        # Explicit focus picker (no free text required)
         focus_topics = st.multiselect(
             "Focus on (choose one or more, or leave blank for a general summary)",
             options=["Precipitation", "Humidity", "Temperature", "Fire risk", "Flood risk"],
             help="If you pick topics, the AI will focus ONLY on these. Otherwise it gives a general summary."
         )
 
-        # Build strict instruction for the backend/AI
+        # Optional: still build a strict instruction string for extra clarity
         if focus_topics:
             question = "Focus ONLY on: " + ", ".join(focus_topics) + ". Do NOT include other topics."
         else:
@@ -161,7 +179,10 @@ with risk_tab:
             else:
                 with st.spinner("Asking n8n for weather + AI summary …"):
                     try:
-                        data = call_risk_endpoint(risk_url, cities, question, detail, shared_secret or None)
+                        # ✅ UPDATED: pass `focus_topics` as an array
+                        data = call_risk_endpoint(
+                            risk_url, cities, question, detail, focus_topics, shared_secret or None
+                        )
                     except Exception as e:
                         st.error(f"Request failed: {e}")
                     else:
