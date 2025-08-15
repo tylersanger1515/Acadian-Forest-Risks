@@ -26,7 +26,7 @@ DEFAULT_CITIES = [
     "Sydney,CA", "Yarmouth,CA", "Truro,CA"
 ]
 
-# ---------- CSS ----------
+# ---------- STYLES ----------
 _STYLES = """
 <style>
 :root{
@@ -34,9 +34,21 @@ _STYLES = """
 }
 .stApp{ background:var(--beige); }
 
-/* Header */
+/* Keep Streamlit header (Share/Edit) but make it slim & beige */
+header[data-testid="stHeader"]{
+  background: var(--beige);
+  box-shadow: none;
+  min-height: 32px; height: 32px;
+  padding-top: 0; padding-bottom: 0;
+}
+header[data-testid="stHeader"] > div { height: 32px; }
+/* Remove small accent line */
+div[data-testid="stDecoration"] { display: none; }
+
+/* SAFER banner */
 .s-header{
-  padding:6px 0 16px; margin:0 0 8px; border-bottom:1px solid #e6e0d4;
+  margin-top: 4px; /* clears slim header */
+  padding:6px 0 16px; margin-bottom:8px; border-bottom:1px solid #e6e0d4;
   box-shadow:0 1px 0 rgba(0,0,0,0.04);
 }
 .s-logo{ display:flex; align-items:center; gap:16px; }
@@ -51,7 +63,7 @@ _STYLES = """
 }
 
 /* App polish */
-.block-container{ max-width:1200px; margin:0 auto; padding-top:1.25rem; padding-bottom:2rem; }
+.block-container{ max-width:1200px; margin:0 auto; padding-top:1rem; padding-bottom:2rem; }
 [data-baseweb="tab-list"]{ margin-top:4px; }
 div.stButton > button{ background:var(--pine); color:#fff; border:1px solid #165a31; }
 div.stButton > button:hover{ background:#175f35; border-color:#134e2b; }
@@ -80,7 +92,6 @@ _HEADER = """
 </div>
 """
 
-# ---------- RENDER HEADER (IMPORTANT: markdown + unsafe_allow_html) ----------
 st.markdown(_STYLES, unsafe_allow_html=True)
 st.markdown(_HEADER, unsafe_allow_html=True)
 
@@ -88,13 +99,8 @@ st.markdown(_HEADER, unsafe_allow_html=True)
 def _headers(secret: Optional[str]) -> Dict[str, str]:
     h = {"Content-Type": "application/json"}
     if secret:
-        # Use a single header consistently; your n8n workflow can read this
         h["X-API-KEY"] = secret
     return h
-
-@st.cache_data(show_spinner=False)
-def _cities_options() -> List[str]:
-    return DEFAULT_CITIES
 
 def post_json(url: str, body: Dict[str, Any], secret: Optional[str], timeout: int = 60) -> Dict[str, Any]:
     r = requests.post(url, headers=_headers(secret), json=body, timeout=timeout)
@@ -180,7 +186,7 @@ with t2:
     st.subheader("Sustainable Management & Risk Summary")
     st.write("Ask for a focused sustainability, fire/flood risk, or environmental insight summary.")
 
-    cities = st.multiselect("Cities", options=_cities_options(), default=["Fredericton,CA"])
+    cities = st.multiselect("Cities", options=DEFAULT_CITIES, default=["Fredericton,CA"])
     detail = st.radio("Detail level", ["short", "detailed"], index=0, horizontal=True)
     focus_topics = st.multiselect(
         "Focus on (choose one or more, or leave blank for a general summary)",
