@@ -22,7 +22,11 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 # ---------- CONFIG ----------
-st.set_page_config(page_title="SAFER - Sustainable Acadian Forests & Enviromental Risks", page_icon="🌲", layout="wide")
+st.set_page_config(
+    page_title="SAFER — Sustainable Acadian Forests & Environmental Risks",
+    page_icon="🌲",
+    layout="wide",
+)
 
 # Read endpoints from Streamlit secrets first, fall back to env vars, then manual sidebar input.
 N8N_FIRES_URL_DEFAULT = st.secrets.get("N8N_FIRES_URL", os.getenv("N8N_FIRES_URL", ""))
@@ -95,41 +99,83 @@ shared_secret = st.sidebar.text_input("Optional shared secret (X-API-KEY)", valu
 st.sidebar.markdown("—")
 st.sidebar.caption("Tip: keep secrets in Streamlit → App → Settings → Secrets. Fields above simply let you override at runtime.")
 
-# ---------- UI ----------
-# ---- SAFER header (styles + markup) ----
-st.markdown("""
+# ---------- HEADER STYLES ----------
+_STYLES = """
 <style>
 :root {
-  --beige: #f6f2ea;
-  --ink: #1f2937;
-  --pine: #1b6b3a;
-  --pine-2: #2d8a4f;
-  --bark: #7a3e1a;
+  --beige:#f6f2ea;
+  --ink:#1f2937;
+  --pine:#1b6b3a;
+  --pine-2:#2d8a4f;
+  --bark:#7a3e1a;
 }
-.stApp { background: var(--beige); }
+.stApp { background:var(--beige); }
 
-/* Header layout */
-.s-header { padding: 6px 0 16px; margin: 0 0 8px; border-bottom: 1px solid #e6e0d4; }
-.s-logo { display: flex; align-items: center; gap: 16px; }
-.s-wordmark { line-height: 1.1; }
-.s-acronym { font-weight: 800; font-size: 44px; letter-spacing: .3px; color: var(--ink); }
-.s-sub { font-size: 18px; color: #374151; margin-top: 2px; }
-.s-tag { font-size: 16px; font-style: italic; color: var(--pine); margin-top: 4px; }
+/* Header */
+.s-header { 
+  padding:6px 0 16px; 
+  margin:0 0 8px; 
+  border-bottom:1px solid #e6e0d4; 
+  box-shadow: 0 1px 0 rgba(0,0,0,0.04); /* subtle shadow */
+}
+.s-logo { display:flex; align-items:center; gap:16px; }
+.s-wordmark { line-height:1.1; }
+.s-acronym { font-weight:800; font-size:44px; letter-spacing:.3px; color:var(--ink); }
+.s-sub { font-size:18px; color:#374151; margin-top:2px; }
+.s-tag { font-size:16px; font-style:italic; color:var(--pine); margin-top:4px; }
 
 /* Larger screens */
-@media (min-width: 900px) {
-  .s-acronym { font-size: 56px; }
-  .s-sub { font-size: 20px; }
+@media (min-width:900px){
+  .s-acronym{ font-size:56px; }
+  .s-sub{ font-size:20px; }
 }
+
+/* ---- Extra app-wide polish ---- */
+
+/* Tighten page padding */
+.block-container { padding-top: 1.25rem; padding-bottom: 2rem; }
+
+/* Brand primary buttons */
+div.stButton > button {
+  background: var(--pine);
+  color: #fff;
+  border: 1px solid #165a31;
+}
+div.stButton > button:hover {
+  background: #175f35;
+  border-color: #134e2b;
+}
+
+/* Tab underline + hover */
+[data-baseweb="tab-list"] button[role="tab"][aria-selected="true"] {
+  border-bottom: 2px solid var(--pine);
+}
+[data-baseweb="tab-list"] button[role="tab"]:hover {
+  background: rgba(27,107,58,0.06);
+}
+
+/* Code blocks blend with beige */
+.stCodeBlock, pre, code {
+  background: #f2ecdf !important;
+}
+
+/* Links use pine color */
+a { color: var(--pine); }
+a:hover { text-decoration: underline; }
+
 </style>
+"""
+
+# ---------- HEADER MARKUP ----------
+_HEADER = """
 <div class="s-header">
   <div class="s-logo">
-    <!-- Leaning white pine canopy -->
+    <!-- Leaning white pine -->
     <svg width="96" height="72" viewBox="0 0 120 90" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <!-- canopy layers -->
+      <!-- Canopy layers -->
       <path d="M58 28 C35 45, 20 50, 8 52 C27 36, 56 20, 98 22 C84 28, 72 32, 58 28 Z" fill="var(--pine)"/>
       <path d="M63 22 C38 38, 22 46, 12 48 C32 32, 60 16, 105 18 C90 25, 76 28, 63 22 Z" fill="var(--pine-2)"/>
-      <!-- trunk (slight lean) -->
+      <!-- Trunk (slight lean) -->
       <rect x="49" y="40" width="8" height="30" rx="3" fill="var(--bark)" transform="skewX(-10)"/>
     </svg>
 
@@ -140,7 +186,11 @@ st.markdown("""
     </div>
   </div>
 </div>
-""", unsafe_allow_html=True)
+"""
+
+# ---------- RENDER HEADER ----------
+st.markdown(_STYLES, unsafe_allow_html=True)
+st.markdown(_HEADER, unsafe_allow_html=True)
 
 fires_tab, risk_tab = st.tabs(["🔥 New/Ongoing Fires", "🛰️ Forest Risk Summary Today"])
 
