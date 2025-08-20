@@ -1,6 +1,6 @@
 # ---------- IMPORTS ----------
 from __future__ import annotations
-import os, json, base64
+import os, json, base64, re
 from typing import List, Dict, Any, Optional
 
 import requests
@@ -18,6 +18,9 @@ st.set_page_config(
 # ---------- SECRETS / DEFAULTS ----------
 N8N_FIRES_URL_DEFAULT = st.secrets.get("N8N_FIRES_URL", os.getenv("N8N_FIRES_URL", ""))
 N8N_RISK_URL_DEFAULT  = st.secrets.get("N8N_RISK_URL",  os.getenv("N8N_RISK_URL",  ""))
+# NEW: subscribe endpoint
+N8N_SUBSCRIBE_URL_DEFAULT = st.secrets.get("N8N_SUBSCRIBE_URL", os.getenv("N8N_SUBSCRIBE_URL", ""))
+
 N8N_SHARED_SECRET_DEFAULT = st.secrets.get("N8N_SHARED_SECRET", os.getenv("N8N_SHARED_SECRET", ""))
 
 DEFAULT_CITIES = [
@@ -127,16 +130,21 @@ def extract_risk_payload(d: Dict[str, Any]) -> Dict[str, Any]:
         "title": d.get("title") or d.get("subject"),
     }
 
+def _valid_email(x: str) -> bool:
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", x or ""))
+
 # ---------- SIDEBAR ----------
 st.sidebar.title("🔌 Connections")
 fires_url = st.sidebar.text_input("Active Fires webhook URL", value=N8N_FIRES_URL_DEFAULT)
 risk_url  = st.sidebar.text_input("Forest Risk webhook URL", value=N8N_RISK_URL_DEFAULT)
+# NEW: subscribe manage webhook
+subscribe_url = st.sidebar.text_input("Subscribe webhook URL", value=N8N_SUBSCRIBE_URL_DEFAULT)
 shared_secret = st.sidebar.text_input("Optional shared secret (X-API-KEY)", value=N8N_SHARED_SECRET_DEFAULT, type="password")
 timeout_sec = st.sidebar.slider("Request timeout (seconds)", 10, 120, 60)
-st.sidebar.caption("Store secrets in `.streamlit/secrets.toml` (N8N_FIRES_URL, N8N_RISK_URL, N8N_SHARED_SECRET).")
+st.sidebar.caption("Store secrets in `.streamlit/secrets.toml` (N8N_FIRES_URL, N8N_RISK_URL, N8N_SUBSCRIBE_URL, N8N_SHARED_SECRET).")
 
 # ---------- TABS ----------
-t1, t2 = st.tabs(["🔥 Active Fires", "🧭 Risk Summary"])
+t1, t2, t3 = st.tabs(["🔥 Active Fires", "🧭 Risk Summary", "📬 Subscribe"])
 
 # ===== TAB 1: ACTIVE FIRES =====
 with t1:
@@ -221,10 +229,60 @@ with t2:
             except Exception as e:
                 st.error(f"Unexpected error: {e}")
 
+# ===== TAB 3: SUBSCRIBE =====
+with t3:
+    st.subheader("SAFER Fire Alerts")
+    st.write("Enter your location and radius to receive **critical proximity alerts** and the **daily Acadian fires update**.")
+
+    if not subscribe_url:
+        st.warning("Add the Subscribe webhook URL in the sidebar to enable this form.")
+
+    with st.form("sub_form", clear_on_submit=False):
+        email = st.text_input("Email", placeholder="you@example.com")
+        colA, colB = st.columns(2)
+        lat = colA.number_input("Latitude", value=46.1675, step=0.0001, format="%.6f")
+        lon = colB.number_input("Longitude", value=-64.7508, step=0.0001, format="%.6f")
+        radius = st.number_input("Radius (km)", min_value=1, max_value=250, value=10, step=1)
+        active = st.checkbox("Activate alerts", value=True)
+        submitted = st.form_submit_button("Save subscription", type="primary", disabled=not bool(subscribe_url))
+
+    if submitted and subscribe_url:
+        # quick client-side checks
+        errs = []
+        if not _valid_email(email): errs.append("Please enter a valid email.")
+        if abs(lat) > 90: errs.append("Latitude must be between -90 and 90.")
+        if abs(lon) > 180: errs.append("Longitude must be between -180 and 180.")
+        if not (1 <= int(radius) <= 250): errs.append("Radius must be 1–250 km.")
+        if errs:
+            for e in errs: st.error(e)
+        else:
+            body = {
+                "email": email.strip(),
+                "lat": float(lat),
+                "lon": float(lon),
+                "radius_km": int(radius),
+                "active": bool(active),
+                "from": "streamlit"
+            }
+            with st.spinner("Saving subscription…"):
+                try:
+                    resp = post_json(subscribe_url, body, shared_secret or None, timeout=timeout_sec)
+                    # Try to show a friendly message if present
+                    msg = resp.get("message") or resp.get("msg") or resp.get("status") or "Subscription saved."
+                    st.success(msg)
+                    st.json(resp)
+                except requests.HTTPError as e:
+                    st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
+                except requests.RequestException as e:
+                    st.error(f"Request failed: {e}")
+                except Exception as e:
+                    st.error(f"Unexpected error: {e}")
+
 # ---------- FOOTER ----------
 st.markdown("""
 ---
 **Notes**
 - Active Fires tab prefers HTML from your n8n summary (falls back to plain text).
 - Keep n8n behind auth and validate `X-API-KEY` in your workflows for security.
+- Subscribe tab posts to your n8n Webhook (Subscribe-Manage) with `email`, `lat`, `lon`, `radius_km`, and `active`.
 """)
