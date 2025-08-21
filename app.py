@@ -189,16 +189,10 @@ with t1:
 # ===== TAB 2: RISK SUMMARY =====
 with t2:
     st.subheader("Sustainable Management & Risk Summary")
-    st.write("Ask for a focused sustainability, fire/flood risk, or environmental insight summary.")
+    st.write("Ask for a sustainability, fire/flood risk, or environmental insight summary.")
 
     cities = st.multiselect("Cities", options=DEFAULT_CITIES, default=["Fredericton,CA"])
     detail = st.radio("Detail level", ["short", "detailed"], index=0, horizontal=True)
-    focus_topics = st.multiselect(
-        "Focus on (choose one or more, or leave blank for a general summary)",
-        options=["Precipitation", "Humidity", "Temperature", "Fire risk", "Flood risk"],
-        help="If you pick topics, the AI will focus ONLY on these."
-    )
-    question = "Focus ONLY on: " + ", ".join(focus_topics) + ". Do NOT include other topics." if focus_topics else ""
 
     go = st.button("Get risk summary", type="primary", disabled=not bool(risk_url))
     if not risk_url:
@@ -207,11 +201,13 @@ with t2:
     if go and risk_url:
         with st.spinner("Requesting risk summary…"):
             try:
-                payload = {"cities": cities, "question": question, "detail": detail, "focus": focus_topics, "from": "streamlit"}
+                # Removed focus_topics/question. Keep it simple.
+                payload = {"cities": cities, "detail": detail, "from": "streamlit"}
                 data = post_json(risk_url, payload, shared_secret or None, timeout=max(60, timeout_sec))
                 p = extract_risk_payload(data)
 
-                if p["title"]: st.markdown(f"### {p['title']}")
+                if p["title"]:
+                    st.markdown(f"### {p['title']}")
                 if isinstance(p["summary_html"], str) and p["summary_html"].strip():
                     components.html(p["summary_html"], height=820, scrolling=True)
                 else:
@@ -225,6 +221,7 @@ with t2:
                 st.error(f"Request failed: {e}")
             except Exception as e:
                 st.error(f"Unexpected error: {e}")
+
 
 # ===== TAB 3: SUBSCRIBE =====
 with t3:
