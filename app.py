@@ -9,9 +9,12 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 # ---------- CONFIG ----------
+IMG_PATH = "assets/images/fokabs image.jpg"  # your uploaded image
+PAGE_ICON = IMG_PATH if os.path.exists(IMG_PATH) else "🌲"
+
 st.set_page_config(
     page_title="SAFER — Sustainable Acadian Forests & Environmental Risks",
-    page_icon="🌲",
+    page_icon=PAGE_ICON,
     layout="wide",
 )
 
@@ -77,15 +80,28 @@ a{ color:var(--pine); } a:hover{ text-decoration:underline; }
 </style>
 """
 
-# ---------- HEADER (INLINE SVG WHITE PINE) ----------
-_HEADER = """
-<div class="s-header">
-  <div class="s-logo">
+# ---------- HEADER (uses your image if present, else SVG fallback) ----------
+def _logo_html() -> str:
+    if os.path.exists(IMG_PATH):
+        try:
+            with open(IMG_PATH, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("ascii")
+            return f'<img src="data:image/jpeg;base64,{b64}" alt="SAFER logo" style="height:48px;width:auto;border-radius:8px;" />'
+        except Exception:
+            pass
+    # Fallback to previous SVG pine logo
+    return """
     <svg width="96" height="72" viewBox="0 0 120 90" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <path d="M58 28 C35 45, 20 50, 8 52 C27 36, 56 20, 98 22 C84 28, 72 32, 58 28 Z" fill="var(--pine)"/>
       <path d="M63 22 C38 38, 22 46, 12 48 C32 32, 60 16, 105 18 C90 25, 76 28, 63 22 Z" fill="var(--pine-2)"/>
       <rect x="49" y="40" width="8" height="30" rx="3" fill="var(--bark)" transform="skewX(-10)"/>
     </svg>
+    """
+
+_HEADER = f"""
+<div class="s-header">
+  <div class="s-logo">
+    {_logo_html()}
     <div class="s-wordmark">
       <div class="s-acronym">SAFER</div>
       <div class="s-sub">Sustainable Acadian Forests &amp; Environmental Risks</div>
