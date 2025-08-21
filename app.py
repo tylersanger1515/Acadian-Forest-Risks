@@ -35,79 +35,66 @@ DEFAULT_CITIES = [
 # ---------- STYLES ----------
 _STYLES = """
 <style>
-:root{
-  --beige:#f6f2ea; --ink:#1f2937; --pine:#1b6b3a; --pine-2:#2d8a4f; --bark:#7a3e1a;
-}
+:root{ --beige:#f6f2ea; --ink:#1f2937; --pine:#1b6b3a; --pine-2:#2d8a4f; --bark:#7a3e1a; }
 .stApp{ background:var(--beige); }
 
-/* Keep Streamlit header (Share/Edit) but make it slim & beige */
-header[data-testid="stHeader"]{
-  background: var(--beige);
-  box-shadow: none;
-  min-height: 32px; height: 32px;
-  padding-top: 0; padding-bottom: 0;
-}
-header[data-testid="stHeader"] > div { height: 32px; }
-/* Remove small accent line */
-div[data-testid="stDecoration"] { display: none; }
+/* Keep Streamlit header slim & beige */
+header[data-testid="stHeader"]{ background:var(--beige); box-shadow:none; min-height:32px; height:32px; padding:0; }
+header[data-testid="stHeader"] > div{ height:32px; }
+div[data-testid="stDecoration"]{ display:none; }
 
-/* SAFER banner */
-.s-header{
-  margin-top: 4px; /* clears slim header */
-  padding:6px 0 16px; margin-bottom:8px; border-bottom:1px solid #e6e0d4;
-  box-shadow:0 1px 0 rgba(0,0,0,0.04);
-}
-.s-logo{ display:flex; align-items:center; gap:16px; }
-.s-wordmark{ line-height:1.1; }
-.s-acronym{ font-weight:800; font-size:44px; letter-spacing:.3px; color:var(--ink); }
-.s-sub{ font-size:18px; color:#374151; margin-top:2px; }
-.s-tag{ font-size:16px; font-style:italic; color:var(--pine); margin-top:4px; }
-
-@media (min-width:900px){
-  .s-acronym{ font-size:56px; }
-  .s-sub{ font-size:20px; }
-}
-
-/* App polish */
+/* App layout + tabs polish */
 .block-container{ max-width:1200px; margin:0 auto; padding-top:1rem; padding-bottom:2rem; }
 [data-baseweb="tab-list"]{ margin-top:4px; }
-div.stButton > button{ background:var(--pine); color:#fff; border:1px solid #165a31; }
-div.stButton > button:hover{ background:#175f35; border-color:#134e2b; }
 [data-baseweb="tab-list"] button[role="tab"][aria-selected="true"]{ border-bottom:2px solid var(--pine); }
-[data-baseweb="tab-list"] button[role="tab"]:hover{ background:rgba(27,107,58,0.06); }
-.stCodeBlock, pre, code{ background:#f2ecdf !important; }
-a{ color:var(--pine); } a:hover{ text-decoration:underline; }
+
+/* SAFER header */
+.s-header{ margin-top:6px; padding:8px 0 16px; margin-bottom:8px; border-bottom:1px solid #e6e0d4; }
+.s-title-row{ display:flex; align-items:baseline; gap:12px; }
+.s-acronym{ font-weight:800; font-size:56px; letter-spacing:.3px; color:var(--ink); }
+.s-sub{ font-size:20px; color:#374151; margin-top:6px; }
+.s-tag{ font-size:16px; font-style:italic; color:var(--pine); margin-top:4px; }
+
+@media (max-width:700px){
+  .s-acronym{ font-size:42px; }
+}
 </style>
 """
 
-# ---------- HEADER (uses your image if present, else SVG fallback) ----------
-def _logo_html() -> str:
-    if os.path.exists(IMG_PATH):
-        try:
-            with open(IMG_PATH, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode("ascii")
-            return f'<img src="data:image/jpeg;base64,{b64}" alt="SAFER logo" style="height:48px;width:auto;border-radius:8px;" />'
-        except Exception:
-            pass
-    # Fallback to previous SVG pine logo
-    return """
-    <svg width="96" height="72" viewBox="0 0 120 90" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+# Path to your uploaded FOKABS image
+IMG_PATH = "assets/images/fokabs image.jpg"
+
+def _pine_svg(height=56) -> str:
+    # inline pine SVG shown BEFORE "SAFER"
+    return f"""
+    <svg viewBox="0 0 120 90" xmlns="http://www.w3.org/2000/svg"
+         aria-hidden="true" style="height:{height}px;width:auto;vertical-align:middle">
       <path d="M58 28 C35 45, 20 50, 8 52 C27 36, 56 20, 98 22 C84 28, 72 32, 58 28 Z" fill="var(--pine)"/>
       <path d="M63 22 C38 38, 22 46, 12 48 C32 32, 60 16, 105 18 C90 25, 76 28, 63 22 Z" fill="var(--pine-2)"/>
       <rect x="49" y="40" width="8" height="30" rx="3" fill="var(--bark)" transform="skewX(-10)"/>
     </svg>
     """
 
+def _fokabs_logo(height=44) -> str:
+    # image shown AFTER "SAFER"
+    import base64, os
+    if os.path.exists(IMG_PATH):
+        ext = os.path.splitext(IMG_PATH)[1].lower()
+        mime = "image/png" if ext == ".png" else "image/jpeg"
+        b64 = base64.b64encode(open(IMG_PATH, "rb").read()).decode("ascii")
+        return f'<img src="data:{mime};base64,{b64}" alt="FOKABS" style="height:{height}px;width:auto;vertical-align:baseline; border-radius:8px" />'
+    # fallback glyph if file missing
+    return '<span style="font-size:28px;vertical-align:baseline">🌐</span>'
+
 _HEADER = f"""
 <div class="s-header">
-  <div class="s-logo">
-    {_logo_html()}
-    <div class="s-wordmark">
-      <div class="s-acronym">SAFER</div>
-      <div class="s-sub">Sustainable Acadian Forests &amp; Environmental Risks</div>
-      <div class="s-tag">Monitor, Maintain, Move Forward</div>
-    </div>
+  <div class="s-title-row">
+    {_pine_svg(56)}
+    <span class="s-acronym">SAFER</span>
+    {_fokabs_logo(44)}
   </div>
+  <div class="s-sub">Sustainable Acadian Forests &amp; Environmental Risks</div>
+  <div class="s-tag">Monitor, Maintain, Move Forward</div>
 </div>
 """
 
