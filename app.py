@@ -21,7 +21,7 @@ st.set_page_config(
 # ---------- SECRETS / DEFAULTS ----------
 N8N_FIRES_URL_DEFAULT = st.secrets.get("N8N_FIRES_URL", os.getenv("N8N_FIRES_URL", ""))
 N8N_RISK_URL_DEFAULT  = st.secrets.get("N8N_RISK_URL",  os.getenv("N8N_RISK_URL",  ""))
-# NEW: subscribe endpoint
+# Subscribe/Manage endpoint
 N8N_SUBSCRIBE_URL_DEFAULT = st.secrets.get("N8N_SUBSCRIBE_URL", os.getenv("N8N_SUBSCRIBE_URL", ""))
 
 N8N_SHARED_SECRET_DEFAULT = st.secrets.get("N8N_SHARED_SECRET", os.getenv("N8N_SHARED_SECRET", ""))
@@ -43,7 +43,7 @@ header[data-testid="stHeader"]{ background:var(--beige); box-shadow:none; min-he
 header[data-testid="stHeader"] > div{ height:32px; }
 div[data-testid="stDecoration"]{ display:none; }
 
-/* App layout + tabs polish */
+/* Layout + tabs polish */
 .block-container{ max-width:1200px; margin:0 auto; padding-top:1rem; padding-bottom:2rem; }
 [data-baseweb="tab-list"]{ margin-top:4px; }
 [data-baseweb="tab-list"] button[role="tab"][aria-selected="true"]{ border-bottom:2px solid var(--pine); }
@@ -61,42 +61,41 @@ div[data-testid="stDecoration"]{ display:none; }
 </style>
 """
 
-# Path to your uploaded FOKABS image
-IMG_PATH = "assets/images/fokabs image.jpg"
-
 def _pine_svg(height=56) -> str:
-    # inline pine SVG shown BEFORE "SAFER"
-    return f"""
-    <svg viewBox="0 0 120 90" xmlns="http://www.w3.org/2000/svg"
-         aria-hidden="true" style="height:{height}px;width:auto;vertical-align:middle">
-      <path d="M58 28 C35 45, 20 50, 8 52 C27 36, 56 20, 98 22 C84 28, 72 32, 58 28 Z" fill="var(--pine)"/>
-      <path d="M63 22 C38 38, 22 46, 12 48 C32 32, 60 16, 105 18 C90 25, 76 28, 63 22 Z" fill="var(--pine-2)"/>
-      <rect x="49" y="40" width="8" height="30" rx="3" fill="var(--bark)" transform="skewX(-10)"/>
-    </svg>
-    """
+    # Inline pine SVG BEFORE "SAFER" — no leading spaces so Markdown won't treat it as code
+    return (
+        f'<svg viewBox="0 0 120 90" xmlns="http://www.w3.org/2000/svg" '
+        f'aria-hidden="true" style="height:{height}px;width:auto;vertical-align:middle">'
+        '<path d="M58 28 C35 45, 20 50, 8 52 C27 36, 56 20, 98 22 C84 28, 72 32, 58 28 Z" fill="var(--pine)"/>'
+        '<path d="M63 22 C38 38, 22 46, 12 48 C32 32, 60 16, 105 18 C90 25, 76 28, 63 22 Z" fill="var(--pine-2)"/>'
+        '<rect x="49" y="40" width="8" height="30" rx="3" fill="var(--bark)" transform="skewX(-10)"/>'
+        '</svg>'
+    )
 
 def _fokabs_logo(height=44) -> str:
-    # image shown AFTER "SAFER"
-    import base64, os
+    # FOKABS image AFTER "SAFER" — base64 inlined; no leading spaces
     if os.path.exists(IMG_PATH):
         ext = os.path.splitext(IMG_PATH)[1].lower()
         mime = "image/png" if ext == ".png" else "image/jpeg"
         b64 = base64.b64encode(open(IMG_PATH, "rb").read()).decode("ascii")
-        return f'<img src="data:{mime};base64,{b64}" alt="FOKABS" style="height:{height}px;width:auto;vertical-align:baseline; border-radius:8px" />'
-    # fallback glyph if file missing
+        return (
+            f'<img src="data:{mime};base64,{b64}" alt="FOKABS" '
+            f'style="height:{height}px;width:auto;vertical-align:baseline;border-radius:8px" />'
+        )
     return '<span style="font-size:28px;vertical-align:baseline">🌐</span>'
 
-_HEADER = f"""
-<div class="s-header">
-  <div class="s-title-row">
-    {_pine_svg(56)}
-    <span class="s-acronym">SAFER</span>
-    {_fokabs_logo(44)}
-  </div>
-  <div class="s-sub">Sustainable Acadian Forests &amp; Environmental Risks</div>
-  <div class="s-tag">Monitor, Maintain, Move Forward</div>
-</div>
-"""
+# Header HTML (no 4-space line starts)
+_HEADER = (
+    '<div class="s-header">\n'
+    '  <div class="s-title-row">\n'
+    + _pine_svg(56)
+    + '<span class="s-acronym">SAFER</span>'
+    + _fokabs_logo(44)
+    + '\n  </div>\n'
+    '  <div class="s-sub">Sustainable Acadian Forests &amp; Environmental Risks</div>\n'
+    '  <div class="s-tag">Monitor, Maintain, Move Forward</div>\n'
+    '</div>'
+)
 
 st.markdown(_STYLES, unsafe_allow_html=True)
 st.markdown(_HEADER, unsafe_allow_html=True)
@@ -140,7 +139,6 @@ def _valid_email(x: str) -> bool:
 st.sidebar.title("🔌 Connections")
 fires_url = st.sidebar.text_input("Active Fires webhook URL", value=N8N_FIRES_URL_DEFAULT)
 risk_url  = st.sidebar.text_input("Forest Risk webhook URL", value=N8N_RISK_URL_DEFAULT)
-# NEW: subscribe manage webhook
 subscribe_url = st.sidebar.text_input("Subscribe webhook URL", value=N8N_SUBSCRIBE_URL_DEFAULT)
 shared_secret = st.sidebar.text_input("Optional shared secret (X-API-KEY)", value=N8N_SHARED_SECRET_DEFAULT, type="password")
 timeout_sec = st.sidebar.slider("Request timeout (seconds)", 10, 120, 60)
@@ -250,7 +248,6 @@ with t3:
         submitted = st.form_submit_button("Save subscription", type="primary", disabled=not bool(subscribe_url))
 
     if submitted and subscribe_url:
-        # quick client-side checks
         errs = []
         if not _valid_email(email): errs.append("Please enter a valid email.")
         if abs(lat) > 90: errs.append("Latitude must be between -90 and 90.")
@@ -270,7 +267,6 @@ with t3:
             with st.spinner("Saving subscription…"):
                 try:
                     resp = post_json(subscribe_url, body, shared_secret or None, timeout=timeout_sec)
-                    # Try to show a friendly message if present
                     msg = resp.get("message") or resp.get("msg") or resp.get("status") or "Subscription saved."
                     st.success(msg)
                     st.json(resp)
