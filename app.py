@@ -21,9 +21,7 @@ st.set_page_config(
 # ---------- SECRETS / DEFAULTS ----------
 N8N_FIRES_URL_DEFAULT = st.secrets.get("N8N_FIRES_URL", os.getenv("N8N_FIRES_URL", ""))
 N8N_RISK_URL_DEFAULT  = st.secrets.get("N8N_RISK_URL",  os.getenv("N8N_RISK_URL",  ""))
-# Subscribe/Manage endpoint
 N8N_SUBSCRIBE_URL_DEFAULT = st.secrets.get("N8N_SUBSCRIBE_URL", os.getenv("N8N_SUBSCRIBE_URL", ""))
-
 N8N_SHARED_SECRET_DEFAULT = st.secrets.get("N8N_SHARED_SECRET", os.getenv("N8N_SHARED_SECRET", ""))
 
 DEFAULT_CITIES = [
@@ -35,10 +33,14 @@ DEFAULT_CITIES = [
 # ---------- STYLES ----------
 _STYLES = """
 <style>
-:root{ --beige:#f6f2ea; --ink:#1f2937; --pine:#1b6b3a; --pine-2:#2d8a4f; --bark:#7a3e1a; }
+:root{
+  --beige:#f6f2ea; --ink:#1f2937;
+  --pine:#0f5132;      /* darker green for SAFER */
+  --pine-2:#2d8a4f; --bark:#7a3e1a;
+}
 .stApp{ background:var(--beige); }
 
-/* Keep Streamlit header slim & beige */
+/* Slim Streamlit chrome */
 header[data-testid="stHeader"]{ background:var(--beige); box-shadow:none; min-height:32px; height:32px; padding:0; }
 header[data-testid="stHeader"] > div{ height:32px; }
 div[data-testid="stDecoration"]{ display:none; }
@@ -48,12 +50,14 @@ div[data-testid="stDecoration"]{ display:none; }
 [data-baseweb="tab-list"]{ margin-top:4px; }
 [data-baseweb="tab-list"] button[role="tab"][aria-selected="true"]{ border-bottom:2px solid var(--pine); }
 
-/* SAFER header */
+/* SAFER header (no pine icon) */
 .s-header{ margin-top:6px; padding:8px 0 16px; margin-bottom:8px; border-bottom:1px solid #e6e0d4; }
-.s-title-row{ display:flex; align-items:baseline; gap:12px; }
-.s-acronym{ font-weight:800; font-size:56px; letter-spacing:.3px; color:var(--ink); }
-.s-sub{ font-size:20px; color:#374151; margin-top:6px; }
-.s-tag{ font-size:16px; font-style:italic; color:var(--pine); margin-top:4px; }
+.s-title{ display:flex; align-items:center; gap:12px; }  /* left block holds text */
+.s-text{ display:block; }
+.s-line1{ display:flex; align-items:baseline; gap:12px; } /* SAFER + FOKABS */
+.s-acronym{ font-weight:800; font-size:56px; letter-spacing:.3px; color:var(--pine); } /* dark green */
+.s-sub{ font-size:20px; color:#374151; margin-top:0; }  /* sits directly under the S of SAFER */
+.s-tag{ font-size:16px; font-style:italic; color:var(--pine-2); margin-top:4px; }
 
 @media (max-width:700px){
   .s-acronym{ font-size:42px; }
@@ -61,39 +65,31 @@ div[data-testid="stDecoration"]{ display:none; }
 </style>
 """
 
-def _pine_svg(height=56) -> str:
-    # Inline pine SVG BEFORE "SAFER" — no leading spaces so Markdown won't treat it as code
-    return (
-        f'<svg viewBox="0 0 120 90" xmlns="http://www.w3.org/2000/svg" '
-        f'aria-hidden="true" style="height:{height}px;width:auto;vertical-align:middle">'
-        '<path d="M58 28 C35 45, 20 50, 8 52 C27 36, 56 20, 98 22 C84 28, 72 32, 58 28 Z" fill="var(--pine)"/>'
-        '<path d="M63 22 C38 38, 22 46, 12 48 C32 32, 60 16, 105 18 C90 25, 76 28, 63 22 Z" fill="var(--pine-2)"/>'
-        '<rect x="49" y="40" width="8" height="30" rx="3" fill="var(--bark)" transform="skewX(-10)"/>'
-        '</svg>'
-    )
-
 def _fokabs_logo(height=44) -> str:
-    # FOKABS image AFTER "SAFER" — base64 inlined; no leading spaces
+    """Image shown AFTER 'SAFER' — base64 inlined to prevent path issues."""
     if os.path.exists(IMG_PATH):
         ext = os.path.splitext(IMG_PATH)[1].lower()
         mime = "image/png" if ext == ".png" else "image/jpeg"
         b64 = base64.b64encode(open(IMG_PATH, "rb").read()).decode("ascii")
         return (
             f'<img src="data:{mime};base64,{b64}" alt="FOKABS" '
-            f'style="height:{height}px;width:auto;vertical-align:baseline;border-radius:8px" />'
+            f'style="height:{height}px;width:auto;vertical-align:baseline;border-radius:10px;padding:6px 10px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.08);" />'
         )
     return '<span style="font-size:28px;vertical-align:baseline">🌐</span>'
 
-# Header HTML (no 4-space line starts)
+# Header HTML (no leading spaces so Markdown won't render a code block)
 _HEADER = (
-    '<div class="s-header">\n'
-    '  <div class="s-title-row">\n'
-    + _pine_svg(56)
-    + '<span class="s-acronym">SAFER</span>'
-    + _fokabs_logo(44)
-    + '\n  </div>\n'
-    '  <div class="s-sub">Sustainable Acadian Forests &amp; Environmental Risks</div>\n'
-    '  <div class="s-tag">Monitor, Maintain, Move Forward</div>\n'
+    '<div class="s-header">'
+    '  <div class="s-title">'
+    '    <div class="s-text">'
+    '      <div class="s-line1">'
+    '        <span class="s-acronym">SAFER</span>'
+    f'        {_fokabs_logo(44)}'
+    '      </div>'
+    '      <div class="s-sub">Sustainable Acadian Forests &amp; Environmental Risks</div>'
+    '      <div class="s-tag">Monitor, Maintain, Move Forward</div>'
+    '    </div>'
+    '  </div>'
     '</div>'
 )
 
