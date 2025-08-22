@@ -221,7 +221,7 @@ with t2:
             except Exception as e:
                 st.error(f"Unexpected error: {e}")
 
-# ===== TAB 3: SUBSCRIBE =====
+# ===== TAB 3: SUBSCRIBE / MANAGE =====
 with t3:
     st.subheader("SAFER Fire Alerts")
     st.write("Enter your location and radius to receive **critical proximity alerts** and the **daily Acadian fires update**.")
@@ -231,42 +231,65 @@ with t3:
 
     with st.form("sub_form", clear_on_submit=False):
         email = st.text_input("Email", placeholder="you@example.com")
+
+        # Optional address, kept when you unsubscribe
+        address = st.text_input("Address (optional)", placeholder="123 Main St, City, Province")
+
         colA, colB = st.columns(2)
         lat = colA.number_input("Latitude", value=46.1675, step=0.0001, format="%.6f")
         lon = colB.number_input("Longitude", value=-64.7508, step=0.0001, format="%.6f")
-        radius = st.number_input("Radius (km)", min_value=1, max_value=250, value=10, step=1)
-        active = st.checkbox("Activate alerts", value=True)
-        submitted = st.form_submit_button("Save subscription", type="primary", disabled=not bool(subscribe_url))
 
-    if submitted and subscribe_url:
+        radius = st.number_input("Radius (km)", min_value=1, max_value=250, value=10, step=1)
+
+        c1, c2 = st.columns(2)
+        save_clicked = c1.form_submit_button("Save subscription", type="primary", disabled=not bool(subscribe_url))
+        unsubscribe_clicked = c2.form_submit_button("Unsubscribe", disabled=not bool(subscribe_url))
+
+    # --- Handlers ---
+    def _save_subscription():
         errs = []
         if not _valid_email(email): errs.append("Please enter a valid email.")
         if abs(lat) > 90: errs.append("Latitude must be between -90 and 90.")
         if abs(lon) > 180: errs.append("Longitude must be between -180 and 180.")
         if not (1 <= int(radius) <= 250): errs.append("Radius must be 1–250 km.")
         if errs:
-            for e in errs: st.error(e)
-        else:
-            body = {
-                "email": email.strip(),
-                "lat": float(lat),
-                "lon": float(lon),
-                "radius_km": int(radius),
-                "active": bool(active),
-                "from": "streamlit"
-            }
-            with st.spinner("Saving subscription…"):
-                try:
-                    resp = post_json(subscribe_url, body, shared_secret or None, timeout=timeout_sec)
-                    msg = resp.get("message") or resp.get("msg") or resp.get("status") or "Subscription saved."
-                    st.success(msg)
-                    st.json(resp)
-                except requests.HTTPError as e:
-                    st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
-                except requests.RequestException as e:
-                    st.error(f"Request failed: {e}")
-                except Exception as e:
-                    st.error(f"Unexpected error: {e}")
+            for e in errs: st.error(e); 
+            return
+
+        body = {
+            "email": email.strip(),
+            "lat": float(lat),
+            "lon": float(lon),
+            "radius_km": int(radius),
+            "address": address.strip(),
+            "active": True,          # single URL decides subscribe path
+            "from": "streamlit"
+        }
+        with st.spinner("Saving subscription…"):
+            resp = post_json(subscribe_url, body, shared_secret or None, timeout=timeout_sec)
+            msg = resp.get("message") or resp.get("msg") or resp.get("status") or "Subscription saved."
+            st.success(msg)
+            st.json(resp)
+
+    def _unsubscribe():
+        if not _valid_email(email):
+            st.error("Please enter a valid email to unsubscribe.")
+            return
+        body = {
+            "email": email.strip(),
+            "active": False,         # single URL decides unsubscribe path
+            "from": "streamlit"
+        }
+        with st.spinner("Unsubscribing…"):
+            resp = post_json(subscribe_url, body, shared_secret or None, timeout=timeout_sec)
+            msg = resp.get("message") or resp.get("msg") or resp.get("status") or "Unsubscribed."
+            st.success(msg)
+            st.json(resp)
+
+    if save_clicked and subscribe_url:
+        _save_subscription()
+    if unsubscribe_clicked and subscribe_url:
+        _unsubscribe()
 
 # ---------- FOOTER ----------
 st.markdown("""
