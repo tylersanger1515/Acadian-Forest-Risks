@@ -251,8 +251,8 @@ with t2:
 
 # ===== TAB 3: SAFER Fire Alert =====
 with t3:
-    st.subheader("Be SAFER in the Acadian region with a fire alert response for your home adrress")
-    st.write("Enter your **address** (required). We’ll geocode it to coordinates, which you can still edit.")
+    st.subheader("Be SAFER in the Acadian region with a fire alert response for your home address")
+    st.write("Enter your **address** (optional). We’ll geocode it to coordinates, or you can set lat/lon manually.")
 
     if not subscribe_url:
         st.warning("Subscribe webhook URL is not configured. Add N8N_SUBSCRIBE_URL in **App → Settings → Secrets**.")
@@ -266,10 +266,15 @@ with t3:
 
     with st.form("sub_form", clear_on_submit=False):
         email = st.text_input("Email", value=ss["sub_email"], placeholder="you@example.com")
-        c_addr = st.columns([4,1])
-        address = c_addr[0].text_input("Address", value=ss["sub_address"], placeholder="123 Main St, Halifax, NS B3H 2Y9")
-        geocode_clicked = c_addr[1].form_submit_button("Geocode", use_container_width=True,
-                                                       disabled=not bool(opencage_key or google_key))
+
+        c_addr = st.columns([4, 1])
+        address = c_addr[0].text_input("Address (optional)", value=ss["sub_address"],
+                                       placeholder="123 Main St, Halifax, NS B3H 2Y9")
+        geocode_clicked = c_addr[1].form_submit_button(
+            "Geocode",
+            use_container_width=True,
+            disabled=not bool(opencage_key or google_key),
+        )
 
         colA, colB = st.columns(2)
         lat = colA.number_input("Latitude", value=float(ss["sub_lat"]), step=0.0001, format="%.6f")
@@ -300,6 +305,7 @@ with t3:
                 st.success(f"Coordinates filled from address (via {g_src}).")
                 st.rerun()
 
+# --- keep function defs at left margin (not indented under the tab) ---
 def _subscribe():
     errs = []
     if not _valid_email(email):
@@ -332,7 +338,7 @@ def _subscribe():
         "lat": lat_val,
         "lon": lon_val,
         "radius_km": int(ss["sub_radius"]),
-        "address": addr_val,   # may be empty if user skipped
+        "address": addr_val,  # may be empty if user skipped
         "active": True,
         "from": "streamlit",
     }
@@ -340,19 +346,27 @@ def _subscribe():
     st.success(resp.get("message") or resp.get("status") or "Subscribed.")
     st.json(resp)
 
-def _unsubscribe():
-        if not _valid_email(email):
-            st.error("Please enter a valid email to unsubscribe.")
-            return
-        body = {"email": email.strip(), "active": False, "from": "streamlit"}
-        resp = post_json(subscribe_url, body, shared_secret or None, timeout=timeout_sec)
-        st.success(resp.get("message") or resp.get("status") or "Unsubscribed.")
-        st.json(resp)
 
-    if subscribe_clicked and subscribe_url:
-        _subscribe()
-    if unsubscribe_clicked and subscribe_url:
-        _unsubscribe()
+def _unsubscribe():
+    if not _valid_email(email):
+        st.error("Please enter a valid email to unsubscribe.")
+        return
+
+    body = {
+        "email": email.strip(),
+        "active": False,
+        "from": "streamlit",
+    }
+    resp = post_json(subscribe_url, body, shared_secret or None, timeout=timeout_sec)
+    st.success(resp.get("message") or resp.get("status") or "Unsubscribed.")
+    st.json(resp)
+
+
+# --- click handlers must also be at left margin ---
+if subscribe_clicked and subscribe_url:
+    _subscribe()
+if unsubscribe_clicked and subscribe_url:
+    _unsubscribe()
 
 # ---------- FOOTER ----------
 st.markdown("""
