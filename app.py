@@ -17,14 +17,33 @@ st.set_page_config(
     layout="wide",
 )
 
-# ---------- SECRETS / DEFAULTS ----------
-N8N_FIRES_URL_DEFAULT = st.secrets.get("N8N_FIRES_URL", os.getenv("N8N_FIRES_URL", ""))
-N8N_RISK_URL_DEFAULT  = st.secrets.get("N8N_RISK_URL",  os.getenv("N8N_RISK_URL",  ""))
-N8N_SUBSCRIBE_URL_DEFAULT = st.secrets.get("N8N_SUBSCRIBE_URL", os.getenv("N8N_SUBSCRIBE_URL", ""))
-N8N_SHARED_SECRET_DEFAULT = st.secrets.get("N8N_SHARED_SECRET", os.getenv("N8N_SHARED_SECRET", ""))
+# ---------- SECRETS / CONFIG HELPERS ----------
+def _get_secret(name: str, default: str | None = None) -> str | None:
+    # Prefer Streamlit Secrets; then environment; then default
+    try:
+        return st.secrets[name]
+    except Exception:
+        return os.getenv(name, default)
 
-OPENCAGE_KEY_DEFAULT = st.secrets.get("OPENCAGE_API_KEY", os.getenv("OPENCAGE_API_KEY", ""))
-GOOGLE_KEY_DEFAULT   = st.secrets.get("GOOGLE_GEOCODING_API_KEY", os.getenv("GOOGLE_GEOCODING_API_KEY", ""))
+def load_config():
+    return {
+        "FIRE_URL":       _get_secret("N8N_FIRES_URL", ""),
+        "RISK_URL":       _get_secret("N8N_RISK_URL", ""),
+        "SUBSCRIBE_URL":  _get_secret("N8N_SUBSCRIBE_URL", ""),
+        "SHARED_SECRET":  _get_secret("N8N_SHARED_SECRET", ""),       # optional
+        "OPENCAGE_KEY":   _get_secret("OPENCAGE_API_KEY", ""),
+        "GOOGLE_KEY":     _get_secret("GOOGLE_GEOCODING_API_KEY", ""),# optional
+        "TIMEOUT_SEC":    int(_get_secret("REQUEST_TIMEOUT_SEC", "60")),
+    }
+
+cfg = load_config()
+fires_url     = cfg["FIRE_URL"]
+risk_url      = cfg["RISK_URL"]
+subscribe_url = cfg["SUBSCRIBE_URL"]
+shared_secret = cfg["SHARED_SECRET"]
+timeout_sec   = cfg["TIMEOUT_SEC"]
+opencage_key  = cfg["OPENCAGE_KEY"]
+google_key    = cfg["GOOGLE_KEY"]
 
 DEFAULT_CITIES = [
     "Fredericton,CA","Moncton,CA","Saint John,CA","Bathurst,CA","Miramichi,CA",
@@ -135,14 +154,11 @@ def _opencage_geocode(address: str, api_key: str) -> Optional[Dict[str, Any]]:
     return results[0] if results else None
 
 def _opencage_is_precise(res: Dict[str, Any]) -> bool:
-    # Heuristic: house_number or house-level component → good
     comp = res.get("components") or {}
     if any(k in comp for k in ("house_number", "house")):
         return True
-    # If we have a road + a postcode subset, still likely street-level
     if "road" in comp and ("postcode" in comp or "suburb" in comp):
         return True
-    # Sometimes OpenCage has a 'confidence' field (0–10)
     conf = res.get("confidence")
     if isinstance(conf, (int, float)) and conf >= 8:
         return True
@@ -152,15 +168,9 @@ def _google_geocode(address: str, api_key: str) -> Optional[Dict[str, Any]]:
     if not api_key or not address.strip():
         return None
     url = "https://maps.googleapis.com/maps/api/geocode/json"
-    params = {
-        "address": address.strip(),
-        "region": "ca",            # country bias
-        "key": api_key,
-    }
-    # Optional: province bias via bounds
+    params = {"address": address.strip(), "region": "ca", "key": api_key}
     b = pick_bounds_from_address(address)
     if b:
-        # Google expects southwest|northeast as "lat,lng|lat,lng"
         params["bounds"] = f"{b['south']},{b['west']}|{b['north']},{b['east']}"
     r = requests.get(url, params=params, timeout=25)
     r.raise_for_status()
@@ -172,11 +182,8 @@ def geocode_address(address: str,
                     oc_key: str,
                     g_key: Optional[str] = None) -> Optional[Tuple[float, float, str, str]]:
     """
-    Try OpenCage first (province-bounded). If the result is coarse (no house number),
-    try Google as a fallback for better precision.
-
+    Try OpenCage first (province-bounded). If coarse, fall back to Google.
     Returns: (lat, lon, formatted_address, source) or None
-    source is "opencage" or "google".
     """
     try:
         oc = _opencage_geocode(address, oc_key) if oc_key else None
@@ -187,7 +194,6 @@ def geocode_address(address: str,
             if _opencage_is_precise(oc) or not g_key:
                 return (lat, lon, fmt, "opencage")
 
-        # Google fallback
         if g_key:
             gg = _google_geocode(address, g_key)
             if gg:
@@ -196,28 +202,14 @@ def geocode_address(address: str,
                 lat, lon = float(loc.get("lat")), float(loc.get("lng"))
                 return (lat, lon, fmt, "google")
 
-        # If neither produced something usable
         if oc:
             return (lat, lon, fmt, "opencage")
         return None
     except Exception:
         return None
 
-# ---------- SIDEBAR ----------
-st.sidebar.title("🔌 Connections")
-fires_url = st.sidebar.text_input("Active Fires webhook URL", value=N8N_FIRES_URL_DEFAULT)
-risk_url  = st.sidebar.text_input("Forest Risk webhook URL", value=N8N_RISK_URL_DEFAULT)
-subscribe_url = st.sidebar.text_input("Subscribe webhook URL", value=N8N_SUBSCRIBE_URL_DEFAULT)
-shared_secret = st.sidebar.text_input("Optional shared secret (X-API-KEY)", value=N8N_SHARED_SECRET_DEFAULT, type="password")
-timeout_sec = st.sidebar.slider("Request timeout (seconds)", 10, 120, 60)
-
-st.sidebar.divider()
-opencage_key = st.sidebar.text_input("OpenCage API key", value=OPENCAGE_KEY_DEFAULT, type="password")
-google_key   = st.sidebar.text_input("Google Geocoding API key (optional fallback)", value=GOOGLE_KEY_DEFAULT, type="password")
-st.sidebar.caption("Store N8N_* and API keys in **App → Settings → Secrets** on Streamlit Cloud.")
-
 # ---------- TABS ----------
-t1, t2, t3 = st.tabs(["🔥 Active Fires", "🧭 Risk Summary", "📬 Subscribe"])
+t1, t2, t3 = st.tabs(["🔥 Active Fires", "🧭 Risk Summary", "🚨 SAFER Fire Alert"])
 
 # ===== TAB 1: ACTIVE FIRES =====
 with t1:
@@ -238,7 +230,7 @@ with t1:
 
 # ===== TAB 2: RISK SUMMARY =====
 with t2:
-    st.subheader("Sustainable Management & Risk Summary")
+    st.subheader("Discover how your cities weather is affecting the Acadian Forest today!")
     cities = st.multiselect("Cities", DEFAULT_CITIES, default=["Fredericton,CA"])
     if st.button("Get risk summary", type="primary", disabled=not bool(risk_url)):
         try:
@@ -257,13 +249,13 @@ with t2:
         except Exception as e:
             st.error(f"Failed: {e}")
 
-# ===== TAB 3: SUBSCRIBE / MANAGE =====
+# ===== TAB 3: SAFER Fire Alert =====
 with t3:
-    st.subheader("SAFER Fire Alerts")
+    st.subheader("Be SAFER in the Acadian region with a fire alert response for your home adrress")
     st.write("Enter your **address** (required). We’ll geocode it to coordinates, which you can still edit.")
 
     if not subscribe_url:
-        st.warning("Add the Subscribe webhook URL in the sidebar to enable this form.")
+        st.warning("Subscribe webhook URL is not configured. Add N8N_SUBSCRIBE_URL in **App → Settings → Secrets**.")
 
     ss = st.session_state
     ss.setdefault("sub_email", "")
@@ -276,7 +268,8 @@ with t3:
         email = st.text_input("Email", value=ss["sub_email"], placeholder="you@example.com")
         c_addr = st.columns([4,1])
         address = c_addr[0].text_input("Address", value=ss["sub_address"], placeholder="123 Main St, Halifax, NS B3H 2Y9")
-        geocode_clicked = c_addr[1].form_submit_button("Geocode", use_container_width=True, disabled=not bool(opencage_key or google_key))
+        geocode_clicked = c_addr[1].form_submit_button("Geocode", use_container_width=True,
+                                                       disabled=not bool(opencage_key or google_key))
 
         colA, colB = st.columns(2)
         lat = colA.number_input("Latitude", value=float(ss["sub_lat"]), step=0.0001, format="%.6f")
@@ -294,7 +287,7 @@ with t3:
     # geocode button
     if geocode_clicked:
         if not (opencage_key or google_key):
-            st.error("Please add at least one geocoding key (OpenCage or Google) in the sidebar.")
+            st.error("Please add at least one geocoding key (OpenCage or Google) in **App → Settings → Secrets**.")
         elif not address.strip():
             st.error("Please enter an address to geocode.")
         else:
@@ -307,37 +300,45 @@ with t3:
                 st.success(f"Coordinates filled from address (via {g_src}).")
                 st.rerun()
 
-    def _subscribe():
-        errs = []
-        if not _valid_email(email): errs.append("Please enter a valid email.")
-        if not address.strip(): errs.append("Address is required.")
-        if abs(float(ss['sub_lat'])) > 90: errs.append("Latitude must be between -90 and 90.")
-        if abs(float(ss['sub_lon'])) > 180: errs.append("Longitude must be between -180 and 180.")
-        if not (1 <= int(ss['sub_radius']) <= 250): errs.append("Radius must be 1–250 km.")
-        if errs:
-            for e in errs: st.error(e)
-            return
+   def _subscribe():
+    errs = []
+    if not _valid_email(email):
+        errs.append("Please enter a valid email.")
+    if abs(float(ss['sub_lat'])) > 90:
+        errs.append("Latitude must be between -90 and 90.")
+    if abs(float(ss['sub_lon'])) > 180:
+        errs.append("Longitude must be between -180 and 180.")
+    if not (1 <= int(ss['sub_radius']) <= 250):
+        errs.append("Radius must be 1–250 km.")
+    if errs:
+        for e in errs:
+            st.error(e)
+        return
 
-        # Prefer auto-geocoding from address when any key is available
-        lat_val, lon_val = float(ss["sub_lat"]), float(ss["sub_lon"])
-        if opencage_key or google_key:
-            g = geocode_address(address, opencage_key, google_key)
-            if g:
-                lat_val, lon_val, fmt, _src = g
-                ss["sub_lat"], ss["sub_lon"], ss["sub_address"] = lat_val, lon_val, fmt
+    # Start with current lat/lon/address
+    lat_val, lon_val = float(ss["sub_lat"]), float(ss["sub_lon"])
+    addr_val = ss["sub_address"].strip()
 
-        body = {
-            "email": email.strip(),
-            "lat": float(lat_val),
-            "lon": float(lon_val),
-            "radius_km": int(ss["sub_radius"]),
-            "address": ss["sub_address"].strip(),
-            "active": True,
-            "from": "streamlit",
-        }
-        resp = post_json(subscribe_url, body, shared_secret or None, timeout=timeout_sec)
-        st.success(resp.get("message") or resp.get("status") or "Subscribed.")
-        st.json(resp)
+    # Only try geocoding if an address was entered
+    if (opencage_key or google_key) and address.strip():
+        g = geocode_address(address, opencage_key, google_key)
+        if g:
+            lat_val, lon_val, fmt, _src = g
+            ss["sub_lat"], ss["sub_lon"], ss["sub_address"] = lat_val, lon_val, fmt
+            addr_val = fmt
+
+    body = {
+        "email": email.strip(),
+        "lat": lat_val,
+        "lon": lon_val,
+        "radius_km": int(ss["sub_radius"]),
+        "address": addr_val,   # may be empty if user skipped
+        "active": True,
+        "from": "streamlit",
+    }
+    resp = post_json(subscribe_url, body, shared_secret or None, timeout=timeout_sec)
+    st.success(resp.get("message") or resp.get("status") or "Subscribed.")
+    st.json(resp)
 
     def _unsubscribe():
         if not _valid_email(email):
