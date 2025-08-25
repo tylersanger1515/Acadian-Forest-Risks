@@ -86,12 +86,56 @@ def post_json(url: str, body: Dict[str, Any], secret: Optional[str], timeout: in
 def _valid_email(x: str) -> bool:
     return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", x or ""))
 
+# ---- Province-specific bounds (Option B) ----
+# west, south, east, north (OpenCage format: "west,south|east,north")
+PROVINCE_BOUNDS = {
+    "NB": {"south": 44.5, "west": -69.1, "north": 48.1, "east": -63.7},  # New Brunswick
+    "NS": {"south": 43.3, "west": -66.5, "north": 47.0, "east": -59.3},  # Nova Scotia
+    "PE": {"south": 45.9, "west": -64.4, "north": 47.1, "east": -61.9},  # Prince Edward Island
+    "NL": {"south": 46.5, "west": -59.5, "north": 53.8, "east": -52.0},  # Newfoundland (island) & Labrador east
+}
+
+def _norm(s: str) -> str:
+    s2 = re.sub(r"[^\w\s]", " ", s or "")
+    s2 = re.sub(r"\s+", " ", s2).strip().upper()
+    return s2
+
+def pick_bounds_from_address(address: str) -> Optional[Dict[str, float]]:
+    a = " " + _norm(address) + " "
+    # Common province cues
+    if " NEW BRUNSWICK " in a or " NB " in a:
+        return PROVINCE_BOUNDS["NB"]
+    if " NOVA SCOTIA " in a or " NS " in a:
+        return PROVINCE_BOUNDS["NS"]
+    if " PRINCE EDWARD ISLAND " in a or " PEI " in a or " PE " in a:
+        return PROVINCE_BOUNDS["PE"]
+    if " NEWFOUNDLAND " in a or " LABRADOR " in a or " NL " in a:
+        return PROVINCE_BOUNDS["NL"]
+    # Fallback: None -> no bounds (or could choose a big Acadian box if you want)
+    return None
+
 def geocode_address(address: str, api_key: str, country: str = "ca") -> Optional[Tuple[float, float, str]]:
+    """
+    Geocode with OpenCage and bias to the detected province via bounds.
+    Returns (lat, lon, formatted_address) or None.
+    """
     if not api_key or not address.strip():
         return None
     try:
         url = "https://api.opencagedata.com/geocode/v1/json"
-        params = {"q": address.strip(), "key": api_key, "limit": 1, "countrycode": country}
+        params = {
+            "q": address.strip(),
+            "key": api_key,
+            "limit": 1,
+            "countrycode": country,
+            "no_annotations": 1,
+            "pretty": 0,
+        }
+        # Apply province-specific bounds if we can infer them
+        b = pick_bounds_from_address(address)
+        if b:
+            params["bounds"] = f"{b['west']},{b['south']}|{b['east']},{b['north']}"
+
         r = requests.get(url, params=params, timeout=25)
         r.raise_for_status()
         data = r.json()
@@ -99,8 +143,11 @@ def geocode_address(address: str, api_key: str, country: str = "ca") -> Optional
         if not results:
             return None
         best = results[0]
-        return (float(best["geometry"]["lat"]), float(best["geometry"]["lng"]),
-                best.get("formatted") or address.strip())
+        return (
+            float(best["geometry"]["lat"]),
+            float(best["geometry"]["lng"]),
+            best.get("formatted") or address.strip(),
+        )
     except Exception:
         return None
 
@@ -218,7 +265,7 @@ with t3:
             for e in errs: st.error(e)
             return
 
-        # If we have a key, prefer auto-geocoding from address; otherwise keep manual coords
+        # Prefer auto-geocoding from address when key is available
         lat_val, lon_val = float(ss["sub_lat"]), float(ss["sub_lon"])
         if opencage_key:
             g = geocode_address(address, opencage_key, country="ca")
@@ -257,6 +304,6 @@ with t3:
 st.markdown("""
 ---
 **Notes**
-- Address is required for subscribing. We geocode via OpenCage and you can still fine-tune lat/lon after.
+- Address is required for subscribing. We geocode via OpenCage (with Acadian province bounds) and you can still fine-tune lat/lon after.
 - Store secrets in `.streamlit/secrets.toml`: `N8N_*` and `OPENCAGE_API_KEY`.
 """)
