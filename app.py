@@ -92,7 +92,7 @@ PROVINCE_BOUNDS = {
     "NB": {"south": 44.5, "west": -69.1, "north": 48.1, "east": -63.7},  # New Brunswick
     "NS": {"south": 43.3, "west": -66.5, "north": 47.0, "east": -59.3},  # Nova Scotia
     "PE": {"south": 45.9, "west": -64.4, "north": 47.1, "east": -61.9},  # Prince Edward Island
-    "NL": {"south": 46.5, "west": -59.5, "north": 53.8, "east": -52.0},  # Newfoundland (island) & Labrador east
+    "NL": {"south": 46.5, "west": -59.5, "north": 53.8, "east": -52.0},  # Newfoundland & Labrador (east)
 }
 
 def _norm(s: str) -> str:
@@ -102,7 +102,6 @@ def _norm(s: str) -> str:
 
 def pick_bounds_from_address(address: str) -> Optional[Dict[str, float]]:
     a = " " + _norm(address) + " "
-    # Common province cues
     if " NEW BRUNSWICK " in a or " NB " in a:
         return PROVINCE_BOUNDS["NB"]
     if " NOVA SCOTIA " in a or " NS " in a:
@@ -111,8 +110,37 @@ def pick_bounds_from_address(address: str) -> Optional[Dict[str, float]]:
         return PROVINCE_BOUNDS["PE"]
     if " NEWFOUNDLAND " in a or " LABRADOR " in a or " NL " in a:
         return PROVINCE_BOUNDS["NL"]
-    # Fallback: None -> no bounds (or could choose a big Acadian box if you want)
     return None
+
+def _format_full_address(best: Dict[str, Any], fallback: str) -> str:
+    """
+    Build a postal-style address whenever components are present.
+    """
+    comps = (best.get("components") or {})
+    parts = []
+    # house number + road
+    num = comps.get("house_number")
+    road = comps.get("road") or comps.get("street")
+    if num and road:
+        parts.append(f"{num} {road}")
+    elif road:
+        parts.append(road)
+    # city / town / village / hamlet
+    locality = comps.get("city") or comps.get("town") or comps.get("village") or comps.get("hamlet")
+    if locality: parts.append(locality)
+    # province code preferred (NS, NB, PE, NL), else full state name
+    prov = comps.get("state_code") or comps.get("state")
+    if prov: parts.append(prov)
+    # postal code if available
+    pc = comps.get("postcode")
+    if pc: parts.append(pc)
+    # country (short)
+    country = comps.get("country_code", "").upper() or comps.get("country")
+    if country: parts.append(country)
+    if parts:
+        return ", ".join(parts)
+    # fallback to provider formatted or our input
+    return best.get("formatted") or fallback
 
 def geocode_address(address: str, api_key: str, country: str = "ca") -> Optional[Tuple[float, float, str]]:
     """
@@ -129,6 +157,7 @@ def geocode_address(address: str, api_key: str, country: str = "ca") -> Optional
             "limit": 1,
             "countrycode": country,
             "no_annotations": 1,
+            "abbrv": 0,         # prefer full names over abbreviations
             "pretty": 0,
         }
         # Apply province-specific bounds if we can infer them
@@ -143,11 +172,10 @@ def geocode_address(address: str, api_key: str, country: str = "ca") -> Optional
         if not results:
             return None
         best = results[0]
-        return (
-            float(best["geometry"]["lat"]),
-            float(best["geometry"]["lng"]),
-            best.get("formatted") or address.strip(),
-        )
+        lat = float(best["geometry"]["lat"])
+        lon = float(best["geometry"]["lng"])
+        formatted = _format_full_address(best, address.strip())
+        return (lat, lon, formatted)
     except Exception:
         return None
 
