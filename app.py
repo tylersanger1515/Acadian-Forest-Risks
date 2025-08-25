@@ -1,7 +1,7 @@
 # ---------- IMPORTS ----------
 from __future__ import annotations
 import os, json, base64, re
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 import requests
 import pandas as pd
@@ -23,6 +23,9 @@ N8N_FIRES_URL_DEFAULT = st.secrets.get("N8N_FIRES_URL", os.getenv("N8N_FIRES_URL
 N8N_RISK_URL_DEFAULT  = st.secrets.get("N8N_RISK_URL",  os.getenv("N8N_RISK_URL",  ""))
 N8N_SUBSCRIBE_URL_DEFAULT = st.secrets.get("N8N_SUBSCRIBE_URL", os.getenv("N8N_SUBSCRIBE_URL", ""))
 N8N_SHARED_SECRET_DEFAULT = st.secrets.get("N8N_SHARED_SECRET", os.getenv("N8N_SHARED_SECRET", ""))
+
+# OpenCage API key (you may also set this in .streamlit/secrets.toml)
+OPENCAGE_KEY_DEFAULT = st.secrets.get("OPENCAGE_API_KEY", os.getenv("OPENCAGE_API_KEY", ""))
 
 DEFAULT_CITIES = [
     "Fredericton,CA", "Moncton,CA", "Saint John,CA", "Bathurst,CA", "Miramichi,CA",
@@ -131,6 +134,30 @@ def extract_risk_payload(d: Dict[str, Any]) -> Dict[str, Any]:
 def _valid_email(x: str) -> bool:
     return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", x or ""))
 
+# ---- Geocoding helpers ----
+def geocode_address(address: str, api_key: str, country: str = "ca") -> Optional[Tuple[float, float, str]]:
+    """
+    Return (lat, lon, formatted_address) or None if not found/error.
+    """
+    if not api_key or not address.strip():
+        return None
+    try:
+        url = "https://api.opencagedata.com/geocode/v1/json"
+        params = {"q": address.strip(), "key": api_key, "limit": 1, "countrycode": country}
+        r = requests.get(url, params=params, timeout=25)
+        r.raise_for_status()
+        data = r.json()
+        results = (data or {}).get("results") or []
+        if not results:
+            return None
+        best = results[0]
+        lat = float(best["geometry"]["lat"])
+        lon = float(best["geometry"]["lng"])
+        formatted = best.get("formatted") or address.strip()
+        return (lat, lon, formatted)
+    except Exception:
+        return None
+
 # ---------- SIDEBAR ----------
 st.sidebar.title("🔌 Connections")
 fires_url = st.sidebar.text_input("Active Fires webhook URL", value=N8N_FIRES_URL_DEFAULT)
@@ -138,7 +165,10 @@ risk_url  = st.sidebar.text_input("Forest Risk webhook URL", value=N8N_RISK_URL_
 subscribe_url = st.sidebar.text_input("Subscribe webhook URL", value=N8N_SUBSCRIBE_URL_DEFAULT)
 shared_secret = st.sidebar.text_input("Optional shared secret (X-API-KEY)", value=N8N_SHARED_SECRET_DEFAULT, type="password")
 timeout_sec = st.sidebar.slider("Request timeout (seconds)", 10, 120, 60)
-st.sidebar.caption("Store secrets in `.streamlit/secrets.toml` (N8N_FIRES_URL, N8N_RISK_URL, N8N_SUBSCRIBE_URL, N8N_SHARED_SECRET).")
+
+st.sidebar.divider()
+opencage_key = st.sidebar.text_input("OpenCage API key (for address → coordinates)", value=OPENCAGE_KEY_DEFAULT, type="password")
+st.sidebar.caption("Store secrets in `.streamlit/secrets.toml` (N8N_* and OPENCAGE_API_KEY).")
 
 # ---------- TABS ----------
 t1, t2, t3 = st.tabs(["🔥 Active Fires", "🧭 Risk Summary", "📬 Subscribe"])
@@ -229,39 +259,81 @@ with t3:
     if not subscribe_url:
         st.warning("Add the Subscribe webhook URL in the sidebar to enable this form.")
 
-    with st.form("sub_form", clear_on_submit=False):
-        email = st.text_input("Email", placeholder="you@example.com")
+    # Keep values in session so the geocode button can update the inputs
+    ss = st.session_state
+    ss.setdefault("sub_email", "")
+    ss.setdefault("sub_address", "")
+    ss.setdefault("sub_lat", 46.1675)
+    ss.setdefault("sub_lon", -64.7508)
+    ss.setdefault("sub_radius", 10)
 
-        # Optional address, kept when you unsubscribe
-        address = st.text_input("Address (optional)", placeholder="123 Main St, City, Province")
+    with st.form("sub_form", clear_on_submit=False):
+        email = st.text_input("Email", value=ss["sub_email"], placeholder="you@example.com")
+
+        # Address is now the primary input → lat/lon will auto-fill via geocoding
+        c_addr = st.columns([4,1])
+        address = c_addr[0].text_input("Address", value=ss["sub_address"], placeholder="123 Main St, City, Province")
+        geocode_clicked = c_addr[1].form_submit_button("Geocode", use_container_width=True, disabled=not bool(opencage_key))
 
         colA, colB = st.columns(2)
-        lat = colA.number_input("Latitude", value=46.1675, step=0.0001, format="%.6f")
-        lon = colB.number_input("Longitude", value=-64.7508, step=0.0001, format="%.6f")
+        lat = colA.number_input("Latitude", value=float(ss["sub_lat"]), step=0.0001, format="%.6f")
+        lon = colB.number_input("Longitude", value=float(ss["sub_lon"]), step=0.0001, format="%.6f")
 
-        radius = st.number_input("Radius (km)", min_value=1, max_value=250, value=10, step=1)
+        radius = st.number_input("Radius (km)", min_value=1, max_value=250, value=int(ss["sub_radius"]), step=1)
 
         c1, c2 = st.columns(2)
         save_clicked = c1.form_submit_button("Save subscription", type="primary", disabled=not bool(subscribe_url))
         unsubscribe_clicked = c2.form_submit_button("Unsubscribe", disabled=not bool(subscribe_url))
 
+    # Update session with the latest typed values (so they persist after submit/refresh)
+    ss["sub_email"] = email
+    ss["sub_address"] = address
+    ss["sub_lat"] = float(lat)
+    ss["sub_lon"] = float(lon)
+    ss["sub_radius"] = int(radius)
+
+    # If user hit the Geocode button, look up coordinates and refresh the fields
+    if geocode_clicked:
+        if not opencage_key:
+            st.error("Please add your OpenCage API key in the sidebar.")
+        elif not address.strip():
+            st.error("Please enter an address to geocode.")
+        else:
+            with st.spinner("Looking up coordinates…"):
+                g = geocode_address(address, opencage_key, country="ca")
+                if not g:
+                    st.error("No coordinates found for that address.")
+                else:
+                    g_lat, g_lon, g_fmt = g
+                    ss["sub_lat"], ss["sub_lon"], ss["sub_address"] = g_lat, g_lon, g_fmt
+                    st.success("Coordinates filled from address.")
+                    st.rerun()
+
     # --- Handlers ---
     def _save_subscription():
+        # If the user provided an address and we have an API key, prefer auto-geocoding
+        lat_val, lon_val = float(ss["sub_lat"]), float(ss["sub_lon"])
+        if address.strip() and opencage_key:
+            g = geocode_address(address, opencage_key, country="ca")
+            if g:
+                lat_val, lon_val, g_fmt = g
+                ss["sub_lat"], ss["sub_lon"], ss["sub_address"] = lat_val, lon_val, g_fmt
+
         errs = []
         if not _valid_email(email): errs.append("Please enter a valid email.")
-        if abs(lat) > 90: errs.append("Latitude must be between -90 and 90.")
-        if abs(lon) > 180: errs.append("Longitude must be between -180 and 180.")
+        if abs(lat_val) > 90: errs.append("Latitude must be between -90 and 90.")
+        if abs(lon_val) > 180: errs.append("Longitude must be between -180 and 180.")
         if not (1 <= int(radius) <= 250): errs.append("Radius must be 1–250 km.")
         if errs:
-            for e in errs: st.error(e); 
+            for e in errs: st.error(e)
             return
 
         body = {
             "email": email.strip(),
-            "lat": float(lat),
-            "lon": float(lon),
+            "lat": float(lat_val),
+            "lon": float(lon_val),
             "radius_km": int(radius),
-            "address": address.strip(),
+            "address": ss["sub_address"].strip(),
             "active": True,          # single URL decides subscribe path
             "from": "streamlit"
         }
@@ -297,5 +369,6 @@ st.markdown("""
 **Notes**
 - Active Fires tab prefers HTML from your n8n summary (falls back to plain text).
 - Keep n8n behind auth and validate `X-API-KEY` in your workflows for security.
-- Subscribe tab posts to your n8n Webhook (Subscribe-Manage) with `email`, `lat`, `lon`, `radius_km`, and `active`.
+- Subscribe tab posts to your n8n Webhook (Subscribe-Manage) with `email`, `lat`, `lon`, `radius_km`, `address`, and `active`.
+- Use the **Geocode** button (or simply Save) to auto-fill coordinates from the address via OpenCage.
 """)
