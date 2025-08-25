@@ -1,15 +1,14 @@
 # ---------- IMPORTS ----------
 from __future__ import annotations
 import os, json, base64, re
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple
 
 import requests
-import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
 # ---------- CONFIG ----------
-IMG_PATH = "assets/images/fokabs image.jpg"  # your uploaded image
+IMG_PATH = "assets/images/fokabs image.jpg"
 PAGE_ICON = IMG_PATH if os.path.exists(IMG_PATH) else "🌲"
 
 st.set_page_config(
@@ -24,76 +23,46 @@ N8N_RISK_URL_DEFAULT  = st.secrets.get("N8N_RISK_URL",  os.getenv("N8N_RISK_URL"
 N8N_SUBSCRIBE_URL_DEFAULT = st.secrets.get("N8N_SUBSCRIBE_URL", os.getenv("N8N_SUBSCRIBE_URL", ""))
 N8N_SHARED_SECRET_DEFAULT = st.secrets.get("N8N_SHARED_SECRET", os.getenv("N8N_SHARED_SECRET", ""))
 
-# OpenCage API key (you may also set this in .streamlit/secrets.toml)
+# OpenCage key (you also set this in .streamlit/secrets.toml)
 OPENCAGE_KEY_DEFAULT = st.secrets.get("OPENCAGE_API_KEY", os.getenv("OPENCAGE_API_KEY", ""))
 
 DEFAULT_CITIES = [
-    "Fredericton,CA", "Moncton,CA", "Saint John,CA", "Bathurst,CA", "Miramichi,CA",
-    "Charlottetown,CA", "Summerside,CA", "Halifax,CA", "Dartmouth,CA",
-    "Sydney,CA", "Yarmouth,CA", "Truro,CA"
+    "Fredericton,CA","Moncton,CA","Saint John,CA","Bathurst,CA","Miramichi,CA",
+    "Charlottetown,CA","Summerside,CA","Halifax,CA","Dartmouth,CA",
+    "Sydney,CA","Yarmouth,CA","Truro,CA",
 ]
 
-# ---------- STYLES ----------
+# ---------- STYLE & HEADER ----------
 _STYLES = """
 <style>
-:root{
-  --beige:#f6f2ea; --ink:#1f2937;
-  --pine:#0f5132;      /* darker green for SAFER */
-  --pine-2:#2d8a4f; --bark:#7a3e1a;
-}
+:root{ --beige:#f6f2ea; --ink:#1f2937; --pine:#0f5132; --pine-2:#2d8a4f; }
 .stApp{ background:var(--beige); }
-
-/* Slim Streamlit chrome */
-header[data-testid="stHeader"]{ background:var(--beige); box-shadow:none; min-height:32px; height:32px; padding:0; }
-header[data-testid="stHeader"] > div{ height:32px; }
-div[data-testid="stDecoration"]{ display:none; }
-
-/* Layout + tabs polish */
+header[data-testid="stHeader"]{ background:var(--beige); box-shadow:none; min-height:32px; height:32px; }
 .block-container{ max-width:1200px; margin:0 auto; padding-top:1rem; padding-bottom:2rem; }
-[data-baseweb="tab-list"]{ margin-top:4px; }
 [data-baseweb="tab-list"] button[role="tab"][aria-selected="true"]{ border-bottom:2px solid var(--pine); }
-
-/* SAFER header (no pine icon) */
 .s-header{ margin-top:6px; padding:8px 0 16px; margin-bottom:8px; border-bottom:1px solid #e6e0d4; }
-.s-title{ display:flex; align-items:center; gap:12px; }  /* left block holds text */
-.s-text{ display:block; }
-.s-line1{ display:flex; align-items:baseline; gap:12px; } /* SAFER + FOKABS */
-.s-acronym{ font-weight:800; font-size:56px; letter-spacing:.3px; color:var(--pine); } /* dark green */
-.s-sub{ font-size:20px; color:#374151; margin-top:0; }  /* sits directly under the S of SAFER */
+.s-title{ display:flex; align-items:center; gap:12px; }
+.s-acronym{ font-weight:800; font-size:56px; letter-spacing:.3px; color:var(--pine); }
+.s-sub{ font-size:20px; color:#374151; margin-top:0; }
 .s-tag{ font-size:16px; font-style:italic; color:var(--pine-2); margin-top:4px; }
-
-@media (max-width:700px){
-  .s-acronym{ font-size:42px; }
-}
+@media (max-width:700px){ .s-acronym{ font-size:42px; } }
 </style>
 """
-
 def _fokabs_logo(height=44) -> str:
-    """Image shown AFTER 'SAFER' — base64 inlined to prevent path issues."""
     if os.path.exists(IMG_PATH):
         ext = os.path.splitext(IMG_PATH)[1].lower()
         mime = "image/png" if ext == ".png" else "image/jpeg"
         b64 = base64.b64encode(open(IMG_PATH, "rb").read()).decode("ascii")
-        return (
-            f'<img src="data:{mime};base64,{b64}" alt="FOKABS" '
-            f'style="height:{height}px;width:auto;vertical-align:baseline;border-radius:10px;padding:6px 10px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.08);" />'
-        )
-    return '<span style="font-size:28px;vertical-align:baseline">🌐</span>'
+        return (f'<img src="data:{mime};base64,{b64}" alt="FOKABS" '
+                f'style="height:{height}px;width:auto;vertical-align:baseline;border-radius:10px;'
+                f'padding:6px 10px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.08);" />')
+    return '🌐'
 
-# Header HTML (no leading spaces so Markdown won't render a code block)
 _HEADER = (
-    '<div class="s-header">'
-    '  <div class="s-title">'
-    '    <div class="s-text">'
-    '      <div class="s-line1">'
-    '        <span class="s-acronym">SAFER</span>'
-    f'        {_fokabs_logo(44)}'
-    '      </div>'
-    '      <div class="s-sub">Sustainable Acadian Forests &amp; Environmental Risks</div>'
-    '      <div class="s-tag">Monitor, Maintain, Move Forward</div>'
-    '    </div>'
-    '  </div>'
-    '</div>'
+    '<div class="s-header"><div class="s-title">'
+    f'<span class="s-acronym">SAFER</span>{_fokabs_logo(44)}'
+    '</div><div class="s-sub">Sustainable Acadian Forests &amp; Environmental Risks</div>'
+    '<div class="s-tag">Monitor, Maintain, Move Forward</div></div>'
 )
 
 st.markdown(_STYLES, unsafe_allow_html=True)
@@ -114,31 +83,10 @@ def post_json(url: str, body: Dict[str, Any], secret: Optional[str], timeout: in
     except Exception:
         return {"summary": r.text}
 
-def extract_fires_payload(d: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "summary_html": d.get("summary_html"),
-        "summary_text": d.get("summary") or d.get("summary_text"),
-        "has_new": d.get("has_new_fires"),
-        "fires_today": d.get("fires_today"),
-        "csv_base64": d.get("csv_base64"),
-        "csv_filename": d.get("csv_filename", "fires.csv"),
-    }
-
-def extract_risk_payload(d: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "summary_html": d.get("summary_html") or d.get("html"),
-        "summary_text": d.get("summary_text") or d.get("summary") or d.get("reply") or d.get("message"),
-        "title": d.get("title") or d.get("subject"),
-    }
-
 def _valid_email(x: str) -> bool:
     return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", x or ""))
 
-# ---- Geocoding helpers ----
 def geocode_address(address: str, api_key: str, country: str = "ca") -> Optional[Tuple[float, float, str]]:
-    """
-    Return (lat, lon, formatted_address) or None if not found/error.
-    """
     if not api_key or not address.strip():
         return None
     try:
@@ -151,10 +99,8 @@ def geocode_address(address: str, api_key: str, country: str = "ca") -> Optional
         if not results:
             return None
         best = results[0]
-        lat = float(best["geometry"]["lat"])
-        lon = float(best["geometry"]["lng"])
-        formatted = best.get("formatted") or address.strip()
-        return (lat, lon, formatted)
+        return (float(best["geometry"]["lat"]), float(best["geometry"]["lng"]),
+                best.get("formatted") or address.strip())
     except Exception:
         return None
 
@@ -168,7 +114,7 @@ timeout_sec = st.sidebar.slider("Request timeout (seconds)", 10, 120, 60)
 
 st.sidebar.divider()
 opencage_key = st.sidebar.text_input("OpenCage API key (for address → coordinates)", value=OPENCAGE_KEY_DEFAULT, type="password")
-st.sidebar.caption("Store secrets in `.streamlit/secrets.toml` (N8N_* and OPENCAGE_API_KEY).")
+st.sidebar.caption("Store N8N_* and OPENCAGE_API_KEY in `.streamlit/secrets.toml`.")
 
 # ---------- TABS ----------
 t1, t2, t3 = st.tabs(["🔥 Active Fires", "🧭 Risk Summary", "📬 Subscribe"])
@@ -176,90 +122,49 @@ t1, t2, t3 = st.tabs(["🔥 Active Fires", "🧭 Risk Summary", "📬 Subscribe"
 # ===== TAB 1: ACTIVE FIRES =====
 with t1:
     st.subheader("Active Fires in the Acadian Region")
-    st.write("Fetch latest data, summary, and CSV for NB / NS / PE (plus nearby if applicable).")
-
-    run = st.button("Fetch Active Fires", type="primary", disabled=not bool(fires_url))
-    if not fires_url:
-        st.warning("Add the Active Fires webhook URL in the sidebar to enable this.")
-
-    if run and fires_url:
-        with st.spinner("Requesting active fires report…"):
-            try:
-                data = post_json(fires_url, {"from": "streamlit"}, shared_secret or None, timeout=timeout_sec)
-                p = extract_fires_payload(data)
-
-                # Summary (prefer HTML)
-                if isinstance(p["summary_html"], str) and p["summary_html"].strip():
-                    components.html(p["summary_html"], height=820, scrolling=True)
-                else:
-                    st.write(p["summary_text"] or "(No summary text returned)")
-
-                # Metrics
-                cols = st.columns(3)
-                if p["fires_today"] is not None: cols[0].metric("Fires today", p["fires_today"])
-                if p["has_new"] is not None: cols[1].metric("New fires?", "Yes" if p["has_new"] else "No")
-
-                # CSV
-                if p["csv_base64"]:
-                    try:
-                        csv_bytes = base64.b64decode(p["csv_base64"])
-                        st.download_button("Download filtered CSV", csv_bytes, file_name=p["csv_filename"], mime="text/csv")
-                    except Exception:
-                        st.info("CSV attachment was provided but could not be decoded.")
-
-                st.success("Received response from n8n")
-                st.toast("Active fires report loaded", icon="✅")
-            except requests.HTTPError as e:
-                st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
-            except requests.RequestException as e:
-                st.error(f"Request failed: {e}")
-            except Exception as e:
-                st.error(f"Unexpected error: {e}")
+    if st.button("Fetch Active Fires", type="primary", disabled=not bool(fires_url)):
+        try:
+            data = post_json(fires_url, {"from": "streamlit"}, shared_secret or None, timeout=timeout_sec)
+            html = data.get("summary_html")
+            if isinstance(html, str) and html.strip():
+                components.html(html, height=820, scrolling=True)
+            else:
+                st.write(data.get("summary") or data.get("summary_text") or "(No summary returned)")
+            st.success("Received response from n8n")
+        except requests.HTTPError as e:
+            st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
+        except Exception as e:
+            st.error(f"Failed: {e}")
 
 # ===== TAB 2: RISK SUMMARY =====
 with t2:
     st.subheader("Sustainable Management & Risk Summary")
-    st.write("**Find out how weather in your city is impacting the Acadian Forest today!**")
-
-    cities = st.multiselect("Cities", options=DEFAULT_CITIES, default=["Fredericton,CA"])
-
-    go = st.button("Get risk summary", type="primary", disabled=not bool(risk_url))
-    if not risk_url:
-        st.warning("Add the Forest Risk webhook URL in the sidebar to enable this.")
-
-    if go and risk_url:
-        with st.spinner("Requesting risk summary…"):
-            try:
-                # Always request a detailed answer
-                payload = {"cities": cities, "detail": "detailed", "from": "streamlit"}
-                data = post_json(risk_url, payload, shared_secret or None, timeout=max(60, timeout_sec))
-                p = extract_risk_payload(data)
-
-                if p["title"]:
-                    st.markdown(f"### {p['title']}")
-                if isinstance(p["summary_html"], str) and p["summary_html"].strip():
-                    components.html(p["summary_html"], height=820, scrolling=True)
-                else:
-                    st.write(p["summary_text"] or "(No summary text returned)")
-
-                st.success("Received response from n8n")
-                st.toast("Risk summary ready", icon="🌲")
-            except requests.HTTPError as e:
-                st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
-            except requests.RequestException as e:
-                st.error(f"Request failed: {e}")
-            except Exception as e:
-                st.error(f"Unexpected error: {e}")
+    cities = st.multiselect("Cities", DEFAULT_CITIES, default=["Fredericton,CA"])
+    if st.button("Get risk summary", type="primary", disabled=not bool(risk_url)):
+        try:
+            payload = {"cities": cities, "detail": "detailed", "from": "streamlit"}
+            data = post_json(risk_url, payload, shared_secret or None, timeout=max(60, timeout_sec))
+            title = data.get("title") or data.get("subject")
+            if title: st.markdown(f"### {title}")
+            html = data.get("summary_html") or data.get("html")
+            if isinstance(html, str) and html.strip():
+                components.html(html, height=820, scrolling=True)
+            else:
+                st.write(data.get("summary_text") or data.get("summary") or "(No summary returned)")
+            st.success("Received response from n8n")
+        except requests.HTTPError as e:
+            st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
+        except Exception as e:
+            st.error(f"Failed: {e}")
 
 # ===== TAB 3: SUBSCRIBE / MANAGE =====
 with t3:
     st.subheader("SAFER Fire Alerts")
-    st.write("Enter your location and radius to receive **critical proximity alerts** and the **daily Acadian fires update**.")
+    st.write("Enter your **address** (required). We’ll geocode it to coordinates, which you can still edit.")
 
     if not subscribe_url:
         st.warning("Add the Subscribe webhook URL in the sidebar to enable this form.")
 
-    # Keep values in session so the geocode button can update the inputs
     ss = st.session_state
     ss.setdefault("sub_email", "")
     ss.setdefault("sub_address", "")
@@ -269,8 +174,6 @@ with t3:
 
     with st.form("sub_form", clear_on_submit=False):
         email = st.text_input("Email", value=ss["sub_email"], placeholder="you@example.com")
-
-        # Address is now the primary input → lat/lon will auto-fill via geocoding
         c_addr = st.columns([4,1])
         address = c_addr[0].text_input("Address", value=ss["sub_address"], placeholder="123 Main St, City, Province")
         geocode_clicked = c_addr[1].form_submit_button("Geocode", use_container_width=True, disabled=not bool(opencage_key))
@@ -278,88 +181,75 @@ with t3:
         colA, colB = st.columns(2)
         lat = colA.number_input("Latitude", value=float(ss["sub_lat"]), step=0.0001, format="%.6f")
         lon = colB.number_input("Longitude", value=float(ss["sub_lon"]), step=0.0001, format="%.6f")
-
         radius = st.number_input("Radius (km)", min_value=1, max_value=250, value=int(ss["sub_radius"]), step=1)
 
         c1, c2 = st.columns(2)
-        save_clicked = c1.form_submit_button("Save subscription", type="primary", disabled=not bool(subscribe_url))
+        subscribe_clicked = c1.form_submit_button("Subscribe", type="primary", disabled=not bool(subscribe_url))
         unsubscribe_clicked = c2.form_submit_button("Unsubscribe", disabled=not bool(subscribe_url))
 
-    # Update session with the latest typed values (so they persist after submit/refresh)
-    ss["sub_email"] = email
-    ss["sub_address"] = address
-    ss["sub_lat"] = float(lat)
-    ss["sub_lon"] = float(lon)
-    ss["sub_radius"] = int(radius)
+    # persist current inputs
+    ss["sub_email"], ss["sub_address"] = email, address
+    ss["sub_lat"], ss["sub_lon"], ss["sub_radius"] = float(lat), float(lon), int(radius)
 
-    # If user hit the Geocode button, look up coordinates and refresh the fields
+    # geocode button
     if geocode_clicked:
         if not opencage_key:
             st.error("Please add your OpenCage API key in the sidebar.")
         elif not address.strip():
             st.error("Please enter an address to geocode.")
         else:
-            with st.spinner("Looking up coordinates…"):
-                g = geocode_address(address, opencage_key, country="ca")
-                if not g:
-                    st.error("No coordinates found for that address.")
-                else:
-                    g_lat, g_lon, g_fmt = g
-                    ss["sub_lat"], ss["sub_lon"], ss["sub_address"] = g_lat, g_lon, g_fmt
-                    st.success("Coordinates filled from address.")
-                    st.rerun()
-
-    # --- Handlers ---
-    def _save_subscription():
-        # If the user provided an address and we have an API key, prefer auto-geocoding
-        lat_val, lon_val = float(ss["sub_lat"]), float(ss["sub_lon"])
-        if address.strip() and opencage_key:
             g = geocode_address(address, opencage_key, country="ca")
-            if g:
-                lat_val, lon_val, g_fmt = g
-                ss["sub_lat"], ss["sub_lon"], ss["sub_address"] = lat_val, lon_val, g_fmt
+            if not g:
+                st.error("No coordinates found for that address.")
+            else:
+                g_lat, g_lon, g_fmt = g
+                ss["sub_lat"], ss["sub_lon"], ss["sub_address"] = g_lat, g_lon, g_fmt
+                st.success("Coordinates filled from address.")
+                st.rerun()
 
+    def _subscribe():
         errs = []
         if not _valid_email(email): errs.append("Please enter a valid email.")
-        if abs(lat_val) > 90: errs.append("Latitude must be between -90 and 90.")
-        if abs(lon_val) > 180: errs.append("Longitude must be between -180 and 180.")
-        if not (1 <= int(radius) <= 250): errs.append("Radius must be 1–250 km.")
+        if not address.strip(): errs.append("Address is required.")
+        if abs(float(ss['sub_lat'])) > 90: errs.append("Latitude must be between -90 and 90.")
+        if abs(float(ss['sub_lon'])) > 180: errs.append("Longitude must be between -180 and 180.")
+        if not (1 <= int(ss['sub_radius']) <= 250): errs.append("Radius must be 1–250 km.")
         if errs:
             for e in errs: st.error(e)
             return
+
+        # If we have a key, prefer auto-geocoding from address; otherwise keep manual coords
+        lat_val, lon_val = float(ss["sub_lat"]), float(ss["sub_lon"])
+        if opencage_key:
+            g = geocode_address(address, opencage_key, country="ca")
+            if g:
+                lat_val, lon_val, fmt = g
+                ss["sub_lat"], ss["sub_lon"], ss["sub_address"] = lat_val, lon_val, fmt
 
         body = {
             "email": email.strip(),
             "lat": float(lat_val),
             "lon": float(lon_val),
-            "radius_km": int(radius),
+            "radius_km": int(ss["sub_radius"]),
             "address": ss["sub_address"].strip(),
-            "active": True,          # single URL decides subscribe path
-            "from": "streamlit"
+            "active": True,
+            "from": "streamlit",
         }
-        with st.spinner("Saving subscription…"):
-            resp = post_json(subscribe_url, body, shared_secret or None, timeout=timeout_sec)
-            msg = resp.get("message") or resp.get("msg") or resp.get("status") or "Subscription saved."
-            st.success(msg)
-            st.json(resp)
+        resp = post_json(subscribe_url, body, shared_secret or None, timeout=timeout_sec)
+        st.success(resp.get("message") or resp.get("status") or "Subscribed.")
+        st.json(resp)
 
     def _unsubscribe():
         if not _valid_email(email):
             st.error("Please enter a valid email to unsubscribe.")
             return
-        body = {
-            "email": email.strip(),
-            "active": False,         # single URL decides unsubscribe path
-            "from": "streamlit"
-        }
-        with st.spinner("Unsubscribing…"):
-            resp = post_json(subscribe_url, body, shared_secret or None, timeout=timeout_sec)
-            msg = resp.get("message") or resp.get("msg") or resp.get("status") or "Unsubscribed."
-            st.success(msg)
-            st.json(resp)
+        body = {"email": email.strip(), "active": False, "from": "streamlit"}
+        resp = post_json(subscribe_url, body, shared_secret or None, timeout=timeout_sec)
+        st.success(resp.get("message") or resp.get("status") or "Unsubscribed.")
+        st.json(resp)
 
-    if save_clicked and subscribe_url:
-        _save_subscription()
+    if subscribe_clicked and subscribe_url:
+        _subscribe()
     if unsubscribe_clicked and subscribe_url:
         _unsubscribe()
 
@@ -367,8 +257,6 @@ with t3:
 st.markdown("""
 ---
 **Notes**
-- Active Fires tab prefers HTML from your n8n summary (falls back to plain text).
-- Keep n8n behind auth and validate `X-API-KEY` in your workflows for security.
-- Subscribe tab posts to your n8n Webhook (Subscribe-Manage) with `email`, `lat`, `lon`, `radius_km`, `address`, and `active`.
-- Use the **Geocode** button (or simply Save) to auto-fill coordinates from the address via OpenCage.
+- Address is required for subscribing. We geocode via OpenCage and you can still fine-tune lat/lon after.
+- Store secrets in `.streamlit/secrets.toml`: `N8N_*` and `OPENCAGE_API_KEY`.
 """)
