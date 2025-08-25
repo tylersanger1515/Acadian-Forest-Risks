@@ -300,7 +300,7 @@ with t3:
                 st.success(f"Coordinates filled from address (via {g_src}).")
                 st.rerun()
 
-   def _subscribe():
+def _subscribe():
     errs = []
     if not _valid_email(email):
         errs.append("Please enter a valid email.")
@@ -340,7 +340,7 @@ with t3:
     st.success(resp.get("message") or resp.get("status") or "Subscribed.")
     st.json(resp)
 
-    def _unsubscribe():
+def _unsubscribe():
         if not _valid_email(email):
             st.error("Please enter a valid email to unsubscribe.")
             return
