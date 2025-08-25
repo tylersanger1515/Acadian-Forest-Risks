@@ -275,7 +275,7 @@ with t3:
     with st.form("sub_form", clear_on_submit=False):
         email = st.text_input("Email", value=ss["sub_email"], placeholder="you@example.com")
         c_addr = st.columns([4,1])
-        address = c_addr[0].text_input("Address", value=ss["sub_address"], placeholder="8 Kings Ext, Clarenville, NL")
+        address = c_addr[0].text_input("Address", value=ss["sub_address"], placeholder="123 Main St, Halifax, NS B3H 2Y9")
         geocode_clicked = c_addr[1].form_submit_button("Geocode", use_container_width=True, disabled=not bool(opencage_key or google_key))
 
         colA, colB = st.columns(2)
