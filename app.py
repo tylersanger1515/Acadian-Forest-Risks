@@ -23,8 +23,8 @@ N8N_RISK_URL_DEFAULT  = st.secrets.get("N8N_RISK_URL",  os.getenv("N8N_RISK_URL"
 N8N_SUBSCRIBE_URL_DEFAULT = st.secrets.get("N8N_SUBSCRIBE_URL", os.getenv("N8N_SUBSCRIBE_URL", ""))
 N8N_SHARED_SECRET_DEFAULT = st.secrets.get("N8N_SHARED_SECRET", os.getenv("N8N_SHARED_SECRET", ""))
 
-# OpenCage key (you also set this in .streamlit/secrets.toml)
 OPENCAGE_KEY_DEFAULT = st.secrets.get("OPENCAGE_API_KEY", os.getenv("OPENCAGE_API_KEY", ""))
+GOOGLE_KEY_DEFAULT   = st.secrets.get("GOOGLE_GEOCODING_API_KEY", os.getenv("GOOGLE_GEOCODING_API_KEY", ""))
 
 DEFAULT_CITIES = [
     "Fredericton,CA","Moncton,CA","Saint John,CA","Bathurst,CA","Miramichi,CA",
@@ -92,7 +92,7 @@ PROVINCE_BOUNDS = {
     "NB": {"south": 44.5, "west": -69.1, "north": 48.1, "east": -63.7},  # New Brunswick
     "NS": {"south": 43.3, "west": -66.5, "north": 47.0, "east": -59.3},  # Nova Scotia
     "PE": {"south": 45.9, "west": -64.4, "north": 47.1, "east": -61.9},  # Prince Edward Island
-    "NL": {"south": 46.5, "west": -59.5, "north": 53.8, "east": -52.0},  # Newfoundland & Labrador (east)
+    "NL": {"south": 46.5, "west": -59.5, "north": 53.8, "east": -52.0},  # NL island & east Labrador
 }
 
 def _norm(s: str) -> str:
@@ -112,70 +112,94 @@ def pick_bounds_from_address(address: str) -> Optional[Dict[str, float]]:
         return PROVINCE_BOUNDS["NL"]
     return None
 
-def _format_full_address(best: Dict[str, Any], fallback: str) -> str:
-    """
-    Build a postal-style address whenever components are present.
-    """
-    comps = (best.get("components") or {})
-    parts = []
-    # house number + road
-    num = comps.get("house_number")
-    road = comps.get("road") or comps.get("street")
-    if num and road:
-        parts.append(f"{num} {road}")
-    elif road:
-        parts.append(road)
-    # city / town / village / hamlet
-    locality = comps.get("city") or comps.get("town") or comps.get("village") or comps.get("hamlet")
-    if locality: parts.append(locality)
-    # province code preferred (NS, NB, PE, NL), else full state name
-    prov = comps.get("state_code") or comps.get("state")
-    if prov: parts.append(prov)
-    # postal code if available
-    pc = comps.get("postcode")
-    if pc: parts.append(pc)
-    # country (short)
-    country = comps.get("country_code", "").upper() or comps.get("country")
-    if country: parts.append(country)
-    if parts:
-        return ", ".join(parts)
-    # fallback to provider formatted or our input
-    return best.get("formatted") or fallback
-
-def geocode_address(address: str, api_key: str, country: str = "ca") -> Optional[Tuple[float, float, str]]:
-    """
-    Geocode with OpenCage and bias to the detected province via bounds.
-    Returns (lat, lon, formatted_address) or None.
-    """
+# ---------- GEOCODING (OpenCage + Google fallback) ----------
+def _opencage_geocode(address: str, api_key: str) -> Optional[Dict[str, Any]]:
     if not api_key or not address.strip():
         return None
-    try:
-        url = "https://api.opencagedata.com/geocode/v1/json"
-        params = {
-            "q": address.strip(),
-            "key": api_key,
-            "limit": 1,
-            "countrycode": country,
-            "no_annotations": 1,
-            "abbrv": 0,         # prefer full names over abbreviations
-            "pretty": 0,
-        }
-        # Apply province-specific bounds if we can infer them
-        b = pick_bounds_from_address(address)
-        if b:
-            params["bounds"] = f"{b['west']},{b['south']}|{b['east']},{b['north']}"
+    url = "https://api.opencagedata.com/geocode/v1/json"
+    params = {
+        "q": address.strip(),
+        "key": api_key,
+        "limit": 1,
+        "countrycode": "ca",
+        "no_annotations": 1,
+        "pretty": 0,
+    }
+    b = pick_bounds_from_address(address)
+    if b:
+        params["bounds"] = f"{b['west']},{b['south']}|{b['east']},{b['north']}"
+    r = requests.get(url, params=params, timeout=25)
+    r.raise_for_status()
+    data = r.json()
+    results = (data or {}).get("results") or []
+    return results[0] if results else None
 
-        r = requests.get(url, params=params, timeout=25)
-        r.raise_for_status()
-        data = r.json()
-        results = (data or {}).get("results") or []
-        if not results:
-            return None
-        best = results[0]
-        lat = float(best["geometry"]["lat"])
-        lon = float(best["geometry"]["lng"])
-        formatted = _format_full_address(best, address.strip())
-        return (lat, lon, formatted)
+def _opencage_is_precise(res: Dict[str, Any]) -> bool:
+    # Heuristic: house_number or house-level component → good
+    comp = res.get("components") or {}
+    if any(k in comp for k in ("house_number", "house")):
+        return True
+    # If we have a road + a postcode subset, still likely street-level
+    if "road" in comp and ("postcode" in comp or "suburb" in comp):
+        return True
+    # Sometimes OpenCage has a 'confidence' field (0–10)
+    conf = res.get("confidence")
+    if isinstance(conf, (int, float)) and conf >= 8:
+        return True
+    return False
+
+def _google_geocode(address: str, api_key: str) -> Optional[Dict[str, Any]]:
+    if not api_key or not address.strip():
+        return None
+    url = "https://maps.googleapis.com/maps/api/geocode/json"
+    params = {
+        "address": address.strip(),
+        "region": "ca",            # country bias
+        "key": api_key,
+    }
+    # Optional: province bias via bounds
+    b = pick_bounds_from_address(address)
+    if b:
+        # Google expects southwest|northeast as "lat,lng|lat,lng"
+        params["bounds"] = f"{b['south']},{b['west']}|{b['north']},{b['east']}"
+    r = requests.get(url, params=params, timeout=25)
+    r.raise_for_status()
+    data = r.json()
+    results = (data or {}).get("results") or []
+    return results[0] if results else None
+
+def geocode_address(address: str,
+                    oc_key: str,
+                    g_key: Optional[str] = None) -> Optional[Tuple[float, float, str, str]]:
+    """
+    Try OpenCage first (province-bounded). If the result is coarse (no house number),
+    try Google as a fallback for better precision.
+
+    Returns: (lat, lon, formatted_address, source) or None
+    source is "opencage" or "google".
+    """
+    try:
+        oc = _opencage_geocode(address, oc_key) if oc_key else None
+        if oc:
+            lat = float(oc["geometry"]["lat"])
+            lon = float(oc["geometry"]["lng"])
+            fmt = oc.get("formatted") or address.strip()
+            if _opencage_is_precise(oc) or not g_key:
+                return (lat, lon, fmt, "opencage")
+
+        # Google fallback
+        if g_key:
+            gg = _google_geocode(address, g_key)
+            if gg:
+                loc = ((gg.get("geometry") or {}).get("location") or {})
+                fmt = gg.get("formatted_address") or address.strip()
+                lat, lon = float(loc.get("lat")), float(loc.get("lng"))
+                return (lat, lon, fmt, "google")
+
+        # If neither produced something usable
+        if oc:
+            return (lat, lon, fmt, "opencage")
+        return None
     except Exception:
         return None
 
@@ -188,8 +212,9 @@ shared_secret = st.sidebar.text_input("Optional shared secret (X-API-KEY)", valu
 timeout_sec = st.sidebar.slider("Request timeout (seconds)", 10, 120, 60)
 
 st.sidebar.divider()
-opencage_key = st.sidebar.text_input("OpenCage API key (for address → coordinates)", value=OPENCAGE_KEY_DEFAULT, type="password")
-st.sidebar.caption("Store N8N_* and OPENCAGE_API_KEY in `.streamlit/secrets.toml`.")
+opencage_key = st.sidebar.text_input("OpenCage API key", value=OPENCAGE_KEY_DEFAULT, type="password")
+google_key   = st.sidebar.text_input("Google Geocoding API key (optional fallback)", value=GOOGLE_KEY_DEFAULT, type="password")
+st.sidebar.caption("Store N8N_* and API keys in **App → Settings → Secrets** on Streamlit Cloud.")
 
 # ---------- TABS ----------
 t1, t2, t3 = st.tabs(["🔥 Active Fires", "🧭 Risk Summary", "📬 Subscribe"])
@@ -250,8 +275,8 @@ with t3:
     with st.form("sub_form", clear_on_submit=False):
         email = st.text_input("Email", value=ss["sub_email"], placeholder="you@example.com")
         c_addr = st.columns([4,1])
-        address = c_addr[0].text_input("Address", value=ss["sub_address"], placeholder="123 Main St, City, Province")
-        geocode_clicked = c_addr[1].form_submit_button("Geocode", use_container_width=True, disabled=not bool(opencage_key))
+        address = c_addr[0].text_input("Address", value=ss["sub_address"], placeholder="8 Kings Ext, Clarenville, NL")
+        geocode_clicked = c_addr[1].form_submit_button("Geocode", use_container_width=True, disabled=not bool(opencage_key or google_key))
 
         colA, colB = st.columns(2)
         lat = colA.number_input("Latitude", value=float(ss["sub_lat"]), step=0.0001, format="%.6f")
@@ -268,18 +293,18 @@ with t3:
 
     # geocode button
     if geocode_clicked:
-        if not opencage_key:
-            st.error("Please add your OpenCage API key in the sidebar.")
+        if not (opencage_key or google_key):
+            st.error("Please add at least one geocoding key (OpenCage or Google) in the sidebar.")
         elif not address.strip():
             st.error("Please enter an address to geocode.")
         else:
-            g = geocode_address(address, opencage_key, country="ca")
+            g = geocode_address(address, opencage_key, google_key)
             if not g:
                 st.error("No coordinates found for that address.")
             else:
-                g_lat, g_lon, g_fmt = g
+                g_lat, g_lon, g_fmt, g_src = g
                 ss["sub_lat"], ss["sub_lon"], ss["sub_address"] = g_lat, g_lon, g_fmt
-                st.success("Coordinates filled from address.")
+                st.success(f"Coordinates filled from address (via {g_src}).")
                 st.rerun()
 
     def _subscribe():
@@ -293,12 +318,12 @@ with t3:
             for e in errs: st.error(e)
             return
 
-        # Prefer auto-geocoding from address when key is available
+        # Prefer auto-geocoding from address when any key is available
         lat_val, lon_val = float(ss["sub_lat"]), float(ss["sub_lon"])
-        if opencage_key:
-            g = geocode_address(address, opencage_key, country="ca")
+        if opencage_key or google_key:
+            g = geocode_address(address, opencage_key, google_key)
             if g:
-                lat_val, lon_val, fmt = g
+                lat_val, lon_val, fmt, _src = g
                 ss["sub_lat"], ss["sub_lon"], ss["sub_address"] = lat_val, lon_val, fmt
 
         body = {
@@ -332,6 +357,6 @@ with t3:
 st.markdown("""
 ---
 **Notes**
-- Address is required for subscribing. We geocode via OpenCage (with Acadian province bounds) and you can still fine-tune lat/lon after.
-- Store secrets in `.streamlit/secrets.toml`: `N8N_*` and `OPENCAGE_API_KEY`.
+- Address is required for subscribing. We geocode via OpenCage (province bounds) and fall back to Google for house-level precision when needed. You can still fine-tune lat/lon after.
+- Put keys in **App → Settings → Secrets** on Streamlit Cloud (recommended). For local dev only, you can also use `.streamlit/secrets.toml`.
 """)
