@@ -285,7 +285,6 @@ with st.form("sub_form", clear_on_submit=False):
 
         btn_label = "Cancel Alerts" if ss.get("alerts_active") else "Activate Alerts"
         toggle_clicked = st.form_submit_button(btn_label, type="primary", disabled=not bool(subscribe_url))
-)
 
     # persist current inputs
     ss["sub_email"], ss["sub_address"] = email, address
