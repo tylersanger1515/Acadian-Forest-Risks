@@ -182,28 +182,27 @@ def geocode_address(address: str,
                     oc_key: str,
                     g_key: Optional[str] = None) -> Optional[Tuple[float, float, str, str]]:
     """
-    Try OpenCage first (province-bounded). If coarse, fall back to Google.
-    Returns: (lat, lon, formatted_address, source) or None
+    Prefer Google. Fall back to OpenCage only if Google returns nothing.
+    Returns: (lat, lon, formatted_address, source)
     """
     try:
-        oc = _opencage_geocode(address, oc_key) if oc_key else None
-        if oc:
-            lat = float(oc["geometry"]["lat"])
-            lon = float(oc["geometry"]["lng"])
-            fmt = oc.get("formatted") or address.strip()
-            if _opencage_is_precise(oc) or not g_key:
-                return (lat, lon, fmt, "opencage")
-
+        # 1) Google first
         if g_key:
             gg = _google_geocode(address, g_key)
             if gg:
                 loc = ((gg.get("geometry") or {}).get("location") or {})
                 fmt = gg.get("formatted_address") or address.strip()
-                lat, lon = float(loc.get("lat")), float(loc.get("lng"))
-                return (lat, lon, fmt, "google")
+                return (float(loc.get("lat")), float(loc.get("lng")), fmt, "google")
 
-        if oc:
-            return (lat, lon, fmt, "opencage")
+        # 2) OpenCage fallback
+        if oc_key:
+            oc = _opencage_geocode(address, oc_key)
+            if oc:
+                lat = float(oc["geometry"]["lat"])
+                lon = float(oc["geometry"]["lng"])
+                fmt = oc.get("formatted") or address.strip()
+                return (lat, lon, fmt, "opencage")
+
         return None
     except Exception:
         return None
