@@ -343,20 +343,23 @@ def _subscribe():
         "lat": lat_val,
         "lon": lon_val,
         "radius_km": int(ss["sub_radius"]),
-        "address": addr_val,  # may be empty if user skipped
+        "address": addr_val,
         "active": True,
         "from": "streamlit",
     }
     resp = post_json(subscribe_url, body, shared_secret or None, timeout=timeout_sec)
-    st.success(resp.get("message") or resp.get("status") or "Subscribed.")
+
+    # Friendly message
+    st.success(f'Alerts activated for "{email.strip()}".')
     st.json(resp)
 
-
     ss["alerts_active"] = True
+    st.rerun()  # flip the button label immediately
+
 
 def _unsubscribe():
     if not _valid_email(email):
-        st.error("Please enter a valid email to unsubscribe.")
+        st.error("Please enter a valid email to cancel alerts.")
         return
 
     body = {
@@ -365,11 +368,13 @@ def _unsubscribe():
         "from": "streamlit",
     }
     resp = post_json(subscribe_url, body, shared_secret or None, timeout=timeout_sec)
-    st.success(resp.get("message") or resp.get("status") or "Unsubscribed.")
+
+    # Friendly message
+    st.success(f'Alerts canceled for "{email.strip()}".')
     st.json(resp)
 
-
     ss["alerts_active"] = False
+    st.rerun()  # flip the button label immediately
 
 # --- click handlers must also be at left margin ---
 if toggle_clicked and subscribe_url:
