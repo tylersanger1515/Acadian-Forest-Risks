@@ -264,7 +264,9 @@ with t3:
     ss.setdefault("sub_lon", -64.7508)
     ss.setdefault("sub_radius", 10)
 
-    with st.form("sub_form", clear_on_submit=False):
+    
+    ss.setdefault("alerts_active", False)
+with st.form("sub_form", clear_on_submit=False):
         email = st.text_input("Email", value=ss["sub_email"], placeholder="you@example.com")
 
         c_addr = st.columns([4, 1])
@@ -281,9 +283,9 @@ with t3:
         lon = colB.number_input("Longitude", value=float(ss["sub_lon"]), step=0.0001, format="%.6f")
         radius = st.number_input("Radius (km)", min_value=1, max_value=250, value=int(ss["sub_radius"]), step=1)
 
-        c1, c2 = st.columns(2)
-        subscribe_clicked = c1.form_submit_button("Subscribe", type="primary", disabled=not bool(subscribe_url))
-        unsubscribe_clicked = c2.form_submit_button("Unsubscribe", disabled=not bool(subscribe_url))
+        btn_label = "Cancel Alerts" if ss.get("alerts_active") else "Activate Alerts"
+        toggle_clicked = st.form_submit_button(btn_label, type="primary", disabled=not bool(subscribe_url))
+)
 
     # persist current inputs
     ss["sub_email"], ss["sub_address"] = email, address
@@ -347,6 +349,8 @@ def _subscribe():
     st.json(resp)
 
 
+    ss["alerts_active"] = True
+
 def _unsubscribe():
     if not _valid_email(email):
         st.error("Please enter a valid email to unsubscribe.")
@@ -362,11 +366,14 @@ def _unsubscribe():
     st.json(resp)
 
 
+    ss["alerts_active"] = False
+
 # --- click handlers must also be at left margin ---
-if subscribe_clicked and subscribe_url:
-    _subscribe()
-if unsubscribe_clicked and subscribe_url:
-    _unsubscribe()
+if toggle_clicked and subscribe_url:
+    if ss.get("alerts_active"):
+        _unsubscribe()
+    else:
+        _subscribe()
 
 # ---------- FOOTER ----------
 st.markdown("""
