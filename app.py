@@ -264,14 +264,18 @@ with t3:
     ss.setdefault("sub_lon", -64.7508)
     ss.setdefault("sub_radius", 10)
 
-    
     ss.setdefault("alerts_active", False)
-with st.form("sub_form", clear_on_submit=False):
+
+    # ---- form ----
+    with st.form("sub_form", clear_on_submit=False):
         email = st.text_input("Email", value=ss["sub_email"], placeholder="you@example.com")
 
         c_addr = st.columns([4, 1])
-        address = c_addr[0].text_input("Address (optional)", value=ss["sub_address"],
-                                       placeholder="123 Main St, Halifax, NS B3H 2Y9")
+        address = c_addr[0].text_input(
+            "Address (optional)",
+            value=ss["sub_address"],
+            placeholder="123 Main St, Halifax, NS B3H 2Y9",
+        )
         geocode_clicked = c_addr[1].form_submit_button(
             "Geocode",
             use_container_width=True,
@@ -286,11 +290,11 @@ with st.form("sub_form", clear_on_submit=False):
         btn_label = "Cancel Alerts" if ss.get("alerts_active") else "Activate Alerts"
         toggle_clicked = st.form_submit_button(btn_label, type="primary", disabled=not bool(subscribe_url))
 
-    # persist current inputs
+    # persist current inputs (still under `with t3:`; outside the form)
     ss["sub_email"], ss["sub_address"] = email, address
     ss["sub_lat"], ss["sub_lon"], ss["sub_radius"] = float(lat), float(lon), int(radius)
 
-    # geocode button
+    # geocode button handler (also under `with t3:`)
     if geocode_clicked:
         if not (opencage_key or google_key):
             st.error("Please add at least one geocoding key (OpenCage or Google) in **App → Settings → Secrets**.")
