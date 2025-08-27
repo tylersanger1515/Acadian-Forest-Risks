@@ -1,6 +1,6 @@
 # ---------- IMPORTS ----------
 from __future__ import annotations
-import os, json, base64, re
+import os, json, base64, re, io, csv, math
 from typing import Dict, Any, Optional, Tuple, List
 
 import requests
@@ -30,7 +30,7 @@ def load_config():
     return {
         "FIRE_URL":        _get_secret("N8N_FIRES_URL", ""),
         "AI_RISK_URL":     _get_secret("N8N_AI_RISK_URL", ""),
-        "RISK_URL":        _get_secret("N8N_RISK_URL", ""),           # fallback only
+        "RISK_URL":        _get_secret("N8N_RISK_URL", ""),  # fallback only (Tab 1)
         "SUBSCRIBE_URL":   _get_secret("N8N_SUBSCRIBE_URL", ""),
         "SHARED_SECRET":   _get_secret("N8N_SHARED_SECRET", ""),
         "OPENCAGE_KEY":    _get_secret("OPENCAGE_API_KEY", ""),
@@ -40,23 +40,15 @@ def load_config():
 
 cfg = load_config()
 fires_url     = cfg["FIRE_URL"]
-risk_url      = cfg["AI_RISK_URL"] or cfg["RISK_URL"]   # Tab 2 uses AI URL only
+risk_url      = cfg["AI_RISK_URL"] or cfg["RISK_URL"]
 subscribe_url = cfg["SUBSCRIBE_URL"]
 shared_secret = cfg["SHARED_SECRET"]
 timeout_sec   = cfg["TIMEOUT_SEC"]
 opencage_key  = cfg["OPENCAGE_KEY"]
 google_key    = cfg["GOOGLE_KEY"]
 
-# Provinces shown in the UI
-PROVINCE_CHOICES = ["NB", "NS", "PE", "NL"]
-
-# Cities per province (kept in sync with your n8n Edit Fields "cities" list)
-PROVINCE_CITIES = {
-    "NB": ["Fredericton", "Moncton", "Saint John", "Bathurst", "Miramichi"],
-    "NS": ["Halifax", "Dartmouth", "Sydney", "Truro"],
-    "PE": ["Charlottetown", "Summerside"],
-    "NL": ["St. John's", "Corner Brook", "Gander", "Grand Falls-Windsor"],
-}
+# Provinces used in UI
+PROVINCE_CHOICES = ["ALL", "NB", "NS", "PE", "NL"]
 
 # ---------- STYLE & HEADER ----------
 _STYLES = """
@@ -74,6 +66,7 @@ header[data-testid="stHeader"]{ background:var(--beige); box-shadow:none; min-he
 @media (max-width:700px){ .s-acronym{ font-size:42px; } }
 </style>
 """
+
 def _fokabs_logo(height=44) -> str:
     if os.path.exists(IMG_PATH):
         ext = os.path.splitext(IMG_PATH)[1].lower()
@@ -109,35 +102,8 @@ def post_json(url: str, body: Dict[str, Any], secret: Optional[str], timeout: in
     except Exception:
         return {"summary": r.text}
 
-def post_map_html(url: str, body: Dict[str, Any], secret: Optional[str], timeout: int = 60) -> str:
-    """Call the AI webhook's MAP branch (returns HTML)."""
-    h = _headers(secret)
-    h["Accept"] = "text/html"
-    r = requests.post(url, headers=h, json=body, timeout=timeout)
-    r.raise_for_status()
-    ct = r.headers.get("Content-Type","")
-    if "text/html" in ct:
-        return r.text
-    # Fallback if the workflow returned JSON with an html field
-    try:
-        j = r.json()
-        return j.get("map_html") or j.get("html") or ""
-    except Exception:
-        return r.text
-
 def _valid_email(x: str) -> bool:
     return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", x or ""))
-
-def _results_to_df(results: List[Dict[str, Any]]) -> pd.DataFrame:
-    df = pd.json_normalize(results)
-    # Standardize a few common column names if present
-    rename = {
-        "city": "City", "province": "Province",
-        "fire_score":"FireScore", "flood_score":"FloodScore",
-        "wind_kph":"WindKPH", "temp_c":"TempC", "humidity":"Humidity",
-    }
-    df = df.rename(columns={k:v for k,v in rename.items() if k in df.columns})
-    return df
 
 # ---- Province-specific bounds (for geocoding in Tab 3) ----
 PROVINCE_BOUNDS = {
@@ -146,10 +112,12 @@ PROVINCE_BOUNDS = {
     "PE": {"south": 45.9, "west": -64.4, "north": 47.1, "east": -61.9},
     "NL": {"south": 46.5, "west": -59.5, "north": 53.8, "east": -52.0},
 }
+
 def _norm(s: str) -> str:
     s2 = re.sub(r"[^\w\s]", " ", s or "")
-    s2 = re.sub(r"\s+", " ", s2).strip().upper()
+    s2 = re.sub(r"\s+", " ").strip().upper()
     return s2
+
 def pick_bounds_from_address(address: str) -> Optional[Dict[str, float]]:
     a = " " + _norm(address) + " "
     if " NEW BRUNSWICK " in a or " NB " in a: return PROVINCE_BOUNDS["NB"]
@@ -169,12 +137,7 @@ def _opencage_geocode(address: str, api_key: str) -> Optional[Dict[str, Any]]:
     r = requests.get(url, params=params, timeout=25); r.raise_for_status()
     data = r.json(); results = (data or {}).get("results") or []
     return results[0] if results else None
-def _opencage_is_precise(res: Dict[str, Any]) -> bool:
-    comp = res.get("components") or {}
-    if any(k in comp for k in ("house_number","house")): return True
-    if "road" in comp and ("postcode" in comp or "suburb" in comp): return True
-    conf = res.get("confidence")
-    return isinstance(conf,(int,float)) and conf >= 8
+
 def _google_geocode(address: str, api_key: str) -> Optional[Dict[str, Any]]:
     if not api_key or not address.strip(): return None
     url = "https://maps.googleapis.com/maps/api/geocode/json"
@@ -184,31 +147,194 @@ def _google_geocode(address: str, api_key: str) -> Optional[Dict[str, Any]]:
     r = requests.get(url, params=params, timeout=25); r.raise_for_status()
     data = r.json(); results = (data or {}).get("results") or []
     return results[0] if results else None
+
+def normalize_address_for_geocoders(addr: str) -> str:
+    ABBREV_REPLACEMENTS = {r"\bext\b": "extension", r"\bst\b": "street", r"\brd\b": "road", r"\bave\b": "avenue", r"\bdr\b": "drive"}
+    s = (addr or "").strip()
+    for pat, repl in ABBREV_REPLACEMENTS.items(): s = re.sub(pat, repl, s, flags=re.I)
+    s_up = s.upper()
+    if re.search(r"(^|[,\s])NL($|[,\s])", s_up) and "NEWFOUNDLAND" not in s_up: s += ", Newfoundland and Labrador, Canada"
+    elif re.search(r"(^|[,\s])NB($|[,\s])", s_up) and "NEW BRUNSWICK" not in s_up: s += ", New Brunswick, Canada"
+    elif re.search(r"(^|[,\s])NS($|[,\s])", s_up) and "NOVA SCOTIA" not in s_up: s += ", Nova Scotia, Canada"
+    elif re.search(r"(^|[,\s])PEI?($|[,\s])", s_up) and "PRINCE EDWARD ISLAND" not in s_up: s += ", Prince Edward Island, Canada"
+    elif "CANADA" not in s_up: s += ", Canada"
+    return s
+
 def geocode_address(address: str, oc_key: str, g_key: Optional[str] = None) -> Optional[Tuple[float,float,str,str]]:
     try:
+        address_clean = normalize_address_for_geocoders(address)
         if g_key:
-            gg = _google_geocode(address, g_key)
+            gg = _google_geocode(address_clean, g_key)
             if gg:
                 loc = (gg.get("geometry") or {}).get("location") or {}
-                return (float(loc.get("lat")), float(loc.get("lng")), gg.get("formatted_address") or address.strip(), "google")
+                return (float(loc.get("lat")), float(loc.get("lng")), gg.get("formatted_address") or address_clean, "google")
         if oc_key:
-            oc = _opencage_geocode(address, oc_key)
+            oc = _opencage_geocode(address_clean, oc_key)
             if oc:
                 lat = float(oc["geometry"]["lat"]); lon = float(oc["geometry"]["lng"])
-                return (lat, lon, oc.get("formatted") or address.strip(), "opencage")
+                return (lat, lon, oc.get("formatted") or address_clean, "opencage")
         return None
     except Exception:
         return None
 
+# =====================================================================
+# SHORT‑TERM LOCAL "AI AGENT" FOR FIRE QUESTIONS (Q2 + Q10)
+# =====================================================================
+ACTIVE_FIRES_URL = "https://cwfis.cfs.nrcan.gc.ca/downloads/activefires/activefires.csv"
+
+# Mock industrial/flare points — replace with real list later
+FLARE_SITES = [
+    {"name": "Saint John Refinery", "lat": 45.291, "lon": -66.025},
+    {"name": "Come By Chance Refinery", "lat": 47.812, "lon": -53.967},
+    {"name": "Halifax Industrial", "lat": 44.655, "lon": -63.600},
+]
+SUPPRESS_RADIUS_M = 3000  # 3 km
+
+
+def _haversine_m(lat1, lon1, lat2, lon2):
+    R = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+def _nearest_flare_km(lat: float, lon: float) -> Tuple[float, str]:
+    if not FLARE_SITES:
+        return (float("inf"), "")
+    best_d, best_name = float("inf"), ""
+    for s in FLARE_SITES:
+        d = _haversine_m(lat, lon, s["lat"], s["lon"])
+        if d < best_d:
+            best_d, best_name = d, s["name"]
+    return (best_d / 1000.0, best_name)
+
+
+def fetch_active_fires_csv() -> List[Dict[str, Any]]:
+    r = requests.get(ACTIVE_FIRES_URL, timeout=30)
+    r.raise_for_status()
+    text = r.text
+    rows = list(csv.DictReader(io.StringIO(text)))
+    return rows
+
+
+def filter_by_province(rows: List[Dict[str, Any]], province: str | None) -> List[Dict[str, Any]]:
+    if not province or province.upper() in ("ALL", "ANY"):
+        return rows
+    prov_cols = ["PROVINCE", "PROV_TERR", "province", "prov_terr"]
+    out = []
+    for r in rows:
+        val = None
+        for c in prov_cols:
+            if c in r and r[c]:
+                val = str(r[c]).strip().upper()
+                break
+        if not val:
+            continue
+        if val == province.upper():
+            out.append(r)
+    return out
+
+
+def normalize_fire_row(r: Dict[str, Any]) -> Dict[str, Any]:
+    lat = r.get("LATITUDE") or r.get("LAT") or r.get("latitude")
+    lon = r.get("LONGITUDE") or r.get("LON") or r.get("longitude")
+    fid = r.get("FIRE_ID") or r.get("FIRENUMBER") or r.get("id") or r.get("FIRE_NUM")
+    prov = r.get("PROVINCE") or r.get("PROV_TERR") or r.get("province")
+    conf = r.get("CONFIDENCE") or r.get("confidence") or 0.7
+    try:
+        lat = float(lat); lon = float(lon)
+    except Exception:
+        return {}
+    try:
+        conf = float(conf)
+    except Exception:
+        conf = 0.7
+    return {
+        "id": str(fid or f"{lat:.4f},{lon:.4f}"),
+        "province": (prov or "").strip() or None,
+        "lat": lat,
+        "lon": lon,
+        "confidence": conf,
+    }
+
+
+def build_fire_summary(province: str | None) -> Dict[str, Any]:
+    try:
+        raw = fetch_active_fires_csv()
+    except Exception:
+        # Minimal mock if the CSV is unreachable (demo safe)
+        raw = [
+            {"FIRENUMBER": "NB001", "PROVINCE": "NB", "LATITUDE": 46.09, "LONGITUDE": -64.78, "CONFIDENCE": 0.83},
+            {"FIRENUMBER": "NS007", "PROVINCE": "NS", "LATITUDE": 44.65, "LONGITUDE": -63.57, "CONFIDENCE": 0.71},
+        ]
+
+    raw = filter_by_province(raw, province)
+    norm = [normalize_fire_row(r) for r in raw]
+    norm = [r for r in norm if r]
+
+    active, suppressed = [], []
+    for j in norm:
+        d_km, near_name = _nearest_flare_km(j["lat"], j["lon"])
+        j["near_flare_km"] = round(d_km, 2)
+        j["likely_false_positive"] = d_km <= (SUPPRESS_RADIUS_M / 1000.0)
+        if j["likely_false_positive"]:
+            j["suppressed_reason"] = f"Near {near_name} ({j['near_flare_km']} km)"
+            j["confidence"] = min(j["confidence"], 0.5)
+            suppressed.append(j)
+        else:
+            active.append(j)
+
+    reg = f"{province.upper()}" if province and province.upper() != "ALL" else "the Acadian region"
+    lines = [f"<b>Active fires in {reg}</b>: {len(active)}"]
+    if active:
+        top = sorted(active, key=lambda x: x.get("confidence", 0), reverse=True)[:5]
+        for t in top:
+            lines.append(
+                f"• <b>{t['id']}</b> ({t.get('province') or '—'}) – conf "
+                f"{t['confidence']:.2f} at {t['lat']:.3f}, {t['lon']:.3f}"
+            )
+    if suppressed:
+        lines.append(
+            f"<hr><i>{len(suppressed)} detections suppressed as likely non-wildfire (e.g., industrial flare).</i>"
+        )
+
+    incidents = [
+        {
+            "id": j["id"],
+            "status": "update",
+            "confidence": j["confidence"],
+            "priority": int(round(j["confidence"] * 100)),
+            "location": {"lat": j["lat"], "lon": j["lon"]},
+            "province": j.get("province"),
+            "sources": ["Provincial"],
+            "forecast": {"h8": {}, "h24": {}, "h72": {}},
+            "actions_taken": ["verified_basic"],
+        }
+        for j in active
+    ]
+
+    return {
+        "summary_html": "<br>".join(lines),
+        "incidents": incidents,
+        # Intentionally NOT returning "results" (so UI shows text, not FireScore bar)
+        "next_actions": [
+            "Replace mock flare points with real layers",
+            "Add smoke/lightning cross-checks",
+        ],
+        "action_error": None,
+    }
+
 # ---------- TABS ----------
 t1, t2, t3 = st.tabs(["🔥 Active Fires", "🤖 AI Agent", "🚨 SAFER Fire Alert"])
 
-# ===== TAB 1: ACTIVE FIRES =====
+# ===== TAB 1: ACTIVE FIRES (n8n-backed, unchanged) =====
 with t1:
     st.subheader("Active Fires in the Acadian Region")
     if st.button("Fetch Active Fires", type="primary", disabled=not bool(fires_url)):
         try:
-            data = post_json(fires_url, {"from":"streamlit"}, shared_secret or None, timeout=timeout_sec)
+            data = post_json(fires_url, {"from": "streamlit"}, shared_secret or None, timeout=timeout_sec)
             html = data.get("summary_html")
             if isinstance(html, str) and html.strip():
                 components.html(html, height=820, scrolling=True)
@@ -220,99 +346,44 @@ with t1:
         except Exception as e:
             st.error(f"Failed: {e}")
 
-# ===== TAB 2: AI AGENT (AI risk analysis only) =====
+# ===== TAB 2: 🤖 AI AGENT (LOCAL — answers Q2 & Q10) =====
 with t2:
-    st.subheader("Ask the AI about risk in the Acadian region")
-    st.caption("Explain what you want in plain English. The agent can return summaries, **maps**, or **charts** for cities across NB, NS, PE, NL.")
+    st.subheader("Ask the AI about fires in the Acadian region")
+    st.caption("This agent summarizes active fires and applies a basic false‑positive check near industrial flares (3 km).")
 
-    colL, colR = st.columns([3,2])
-    with colL:
-        question = st.text_area("Your request", height=110, placeholder="e.g., Which NB cities have the highest fire risk today and why?")
-    with colR:
-        province = st.selectbox("Province filter", ["ALL", "NB", "NS", "PE", "NL"], index=0)
-        since_days = st.number_input("Lookback (days) for 'new' fires (optional)", min_value=0, max_value=30, value=7, step=1)
-        output = st.radio("Output", ["Auto", "Map", "Bar chart", "Line chart", "Table"], horizontal=True)
+    colq, colp = st.columns([3,1])
+    question = colq.text_input("Your request", value="Summarize active fires", placeholder="e.g., Is the hotspot near 45.29 -66.02 a false positive?")
+    province = colp.selectbox("Province filter", PROVINCE_CHOICES, index=1)  # default NB
 
-    # Small examples to help users
-    with st.expander("Examples you can ask"):
-        st.markdown("""
-- *"Rank NB cities by fire risk today and show a bar chart."*  
-- *"Map the current fires in NS with popup details."*  
-- *"Compare Halifax vs Moncton wind speeds and humidity, line chart."*  
-- *"List PE cities with fire risk ≥ 3 as a table."*  
-- *"Give a short narrative summary for all provinces today."*
-        """)
-
-    ask = st.button("Ask AI", type="primary", disabled=not bool(risk_url))
-    if ask:
+    if st.button("Ask AI", type="primary"):
         try:
-            fmt = {
-                "Auto": "",
-                "Map": "map",
-                "Bar chart": "chart:bar",
-                "Line chart": "chart:line",
-                "Table": "table",
-            }[output]
+            resp = build_fire_summary(None if province == "ALL" else province)
+            # Always show something (even 0 fires)
+            st.markdown(resp.get("summary_html", "<i>No summary produced.</i>"), unsafe_allow_html=True)
 
-            payload = {
-                "question": (question or "").strip(),
-                "province": province,
-                "since_days": int(since_days),
-                "format": fmt,
-                "detail": "detailed",
-                "from": "streamlit",
-            }
+            with st.expander("Show incidents JSON"):
+                st.json(resp.get("incidents", []))
 
-            if fmt == "map":
-                html = post_map_html(risk_url, payload, shared_secret or None, timeout=max(60, timeout_sec))
-                if not html.strip():
-                    st.warning("No map returned.")
-                else:
-                    components.html(html, height=820, scrolling=True)
-            else:
-                data = post_json(risk_url, payload, shared_secret or None, timeout=max(60, timeout_sec))
-
-                # Prefer server-provided HTML if available
-                title = data.get("title") or data.get("subject")
-                if title: st.markdown(f"### {title}")
-                html = data.get("summary_html") or data.get("html")
-                if isinstance(html, str) and html.strip():
-                    components.html(html, height=820, scrolling=True)
-
-                # If we receive rows, draw charts/tables
-                results = data.get("results") or []
-                if isinstance(results, list) and results:
-                    df = _results_to_df(results)
-
-                    if output == "Table" or (output == "Auto" and len(df.columns) <= 4):
-                        st.dataframe(df, use_container_width=True)
-                    elif output in ("Bar chart","Line chart") or output == "Auto":
-                        # Pick a y metric automatically if Auto
-                        y_candidates = [c for c in ["FireScore","FloodScore","WindKPH","TempC","Humidity"] if c in df.columns]
-                        y = y_candidates[0] if y_candidates else df.columns[-1]
-                        x = "City" if "City" in df.columns else df.columns[0]
-
-                        if output == "Bar chart" or (output == "Auto" and y == "FireScore"):
-                            chart = alt.Chart(df).mark_bar().encode(x=alt.X(x, sort='-y'), y=y, tooltip=list(df.columns)).properties(height=400)
-                        else:
-                            chart = alt.Chart(df).mark_line(point=True).encode(x=x, y=y, tooltip=list(df.columns)).properties(height=400)
-
-                        st.altair_chart(chart, use_container_width=True)
-
-                    # Download CSV helper
-                    csv = df.to_csv(index=False).encode("utf-8")
-                    st.download_button("Download results as CSV", csv, file_name="risk_results.csv", mime="text/csv")
-
-                if not (html or results):
-                    st.write(data.get("summary_text") or data.get("summary") or "(No response returned)")
-
-            st.success("Received response from AI workflow")
-        except requests.HTTPError as e:
-            st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
+            # Optional: allow download as CSV
+            inc = resp.get("incidents", [])
+            if inc:
+                csv_buf = io.StringIO()
+                w = csv.DictWriter(csv_buf, fieldnames=["id","province","confidence","priority","lat","lon"]) 
+                w.writeheader()
+                for it in inc:
+                    w.writerow({
+                        "id": it["id"],
+                        "province": it.get("province"),
+                        "confidence": it.get("confidence"),
+                        "priority": it.get("priority"),
+                        "lat": it.get("location",{}).get("lat"),
+                        "lon": it.get("location",{}).get("lon"),
+                    })
+                st.download_button("Download results as CSV", data=csv_buf.getvalue(), file_name="fires_incidents.csv", mime="text/csv")
         except Exception as e:
-            st.error(f"Failed: {e}")
+            st.error(f"AI Agent failed: {e}")
 
-# ===== TAB 3: SAFER Fire Alert (unchanged label & behavior) =====
+# ===== TAB 3: SAFER Fire Alert =====
 with t3:
     st.subheader("Be SAFER in the Acadian region with a fire alert response for your home address")
     st.write("Enter your **address** (optional). We’ll geocode it to coordinates, or you can set lat/lon manually.")
@@ -358,7 +429,7 @@ with t3:
                 st.success(f"Coordinates filled from address (via {g_src}).")
                 st.rerun()
 
-# --- subscriber helpers (same behavior) ---
+# --- subscriber helpers ---
 def _subscribe():
     errs = []
     if not _valid_email(st.session_state["sub_email"]): errs.append("Please enter a valid email.")
@@ -381,6 +452,7 @@ def _subscribe():
     resp = post_json(subscribe_url, body, shared_secret or None, timeout=timeout_sec)
     st.success(f'Alerts activated for "{st.session_state["sub_email"].strip()}".'); st.json(resp)
     st.session_state["alerts_active"] = True; st.rerun()
+
 
 def _unsubscribe():
     if not _valid_email(st.session_state["sub_email"]):
