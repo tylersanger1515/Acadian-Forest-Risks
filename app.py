@@ -30,7 +30,7 @@ def load_config():
     return {
         "FIRE_URL":        _get_secret("N8N_FIRES_URL", ""),
         "AI_RISK_URL":     _get_secret("N8N_AI_RISK_URL", ""),
-        "RISK_URL":        _get_secret("N8N_RISK_URL", ""),           # fallback only
+        "RISK_URL":        _get_secret("N8N_RISK_URL", ""),  # fallback only
         "SUBSCRIBE_URL":   _get_secret("N8N_SUBSCRIBE_URL", ""),
         "SHARED_SECRET":   _get_secret("N8N_SHARED_SECRET", ""),
         "OPENCAGE_KEY":    _get_secret("OPENCAGE_API_KEY", ""),
@@ -40,7 +40,7 @@ def load_config():
 
 cfg = load_config()
 fires_url     = cfg["FIRE_URL"]
-risk_url      = cfg["AI_RISK_URL"] or cfg["RISK_URL"]   # Tab 2 uses AI URL if present
+risk_url      = cfg["AI_RISK_URL"] or cfg["RISK_URL"]   # Tab 2 uses AI URL when set
 subscribe_url = cfg["SUBSCRIBE_URL"]
 shared_secret = cfg["SHARED_SECRET"]
 timeout_sec   = cfg["TIMEOUT_SEC"]
@@ -94,7 +94,7 @@ _HEADER = (
 st.markdown(_STYLES, unsafe_allow_html=True)
 st.markdown(_HEADER, unsafe_allow_html=True)
 
-# ---------- HELPERS ----------
+# ---------- HTTP HELPERS ----------
 def _headers(secret: Optional[str]) -> Dict[str, str]:
     h = {"Content-Type": "application/json"}
     if secret:
@@ -125,6 +125,7 @@ def post_map_html(url: str, body: Dict[str, Any], secret: Optional[str], timeout
     except Exception:
         return r.text
 
+# ---------- SMALL UTILS ----------
 def _valid_email(x: str) -> bool:
     return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", x or ""))
 
@@ -138,6 +139,22 @@ def _results_to_df(results: List[Dict[str, Any]]) -> pd.DataFrame:
     }
     df = df.rename(columns={k:v for k,v in rename.items() if k in df.columns})
     return df
+
+def _derive_focus(question: str) -> List[str]:
+    """Cheap NLP: give the router a hint for fire vs weather."""
+    q = (question or "").lower()
+    focus: List[str] = []
+    if any(w in q for w in ["fire", "wildfire", "active fire", "burning"]):
+        focus.append("fire")
+    if any(w in q for w in ["flood", "flooding"]):
+        focus.append("flood")
+    if any(w in q for w in ["wind", "gust"]):
+        focus.append("wind")
+    if any(w in q for w in ["temp", "temperature", "heat", "warmest", "coldest"]):
+        focus.append("temperature")
+    if any(w in q for w in ["humid", "humidity", "dew"]):
+        focus.append("humidity")
+    return focus
 
 # ---- Province-specific bounds (for geocoding in Tab 3) ----
 PROVINCE_BOUNDS = {
@@ -257,11 +274,13 @@ with t2:
                 "question": (question or "").strip(),
                 "province": province,
                 "since_days": int(since_days),
-                "format": fmt,
+                "format": fmt,        # <-- guides n8n router
                 "detail": "detailed",
+                "focus": _derive_focus(question),  # <-- hint fire vs weather
                 "from": "streamlit",
             }
 
+            # If the user explicitly chose Map, hit the MAP branch (HTML)
             if fmt == "map":
                 html = post_map_html(risk_url, payload, shared_secret or None, timeout=max(60, timeout_sec))
                 if not html.strip():
@@ -271,44 +290,74 @@ with t2:
             else:
                 data = post_json(risk_url, payload, shared_secret or None, timeout=max(60, timeout_sec))
 
-                # Title + server-rendered summary/narrative if provided
+                # Title if provided
                 title = data.get("title") or data.get("subject")
                 if title: st.markdown(f"### {title}")
+
+                # Prefer server-provided HTML when present
                 html = data.get("summary_html") or data.get("html")
                 if isinstance(html, str) and html.strip():
                     components.html(html, height=820, scrolling=True)
 
-                # If we receive rows, draw charts/tables
+                # Text summary (even if rows also exist)
+                text_bits = [data.get("summary_text"), data.get("summary")]
+                text_bits = [t for t in text_bits if isinstance(t, str) and t.strip()]
+                if text_bits:
+                    st.write(text_bits[0])
+
+                # Results → chart/table
                 results = data.get("results") or []
                 if isinstance(results, list) and results:
                     df = _results_to_df(results)
 
-                    if output == "Table" or (output == "Auto" and len(df.columns) <= 4):
+                    # decide drawing if Auto
+                    server_intent = (data.get("intent") or "").lower()
+                    if output == "Auto":
+                        if server_intent in {"bar", "chart:bar"}:
+                            output_mode = "Bar chart"
+                        elif server_intent in {"line", "chart:line"}:
+                            output_mode = "Line chart"
+                        elif server_intent in {"table"}:
+                            output_mode = "Table"
+                        else:
+                            # Heuristic: if FireScore exists, default to bar; else if a time axis is present, line; else table
+                            output_mode = "Bar chart" if "FireScore" in df.columns else ("Line chart" if "date" in map(str.lower, df.columns) else "Table")
+                    else:
+                        output_mode = output
+
+                    if output_mode == "Table":
                         st.dataframe(df, use_container_width=True)
-                    elif output in ("Bar chart","Line chart") or output == "Auto":
-                        # Pick a y metric automatically if Auto
+                    elif output_mode == "Bar chart":
                         y_candidates = [c for c in ["FireScore","FloodScore","WindKPH","TempC","Humidity"] if c in df.columns]
                         y = y_candidates[0] if y_candidates else df.columns[-1]
                         x = "City" if "City" in df.columns else df.columns[0]
-
-                        if output == "Bar chart" or (output == "Auto" and y == "FireScore"):
-                            chart = alt.Chart(df).mark_bar().encode(
-                                x=alt.X(x, sort='-y'), y=y, tooltip=list(df.columns)
-                            ).properties(height=400)
-                        else:
-                            chart = alt.Chart(df).mark_line(point=True).encode(
-                                x=x, y=y, tooltip=list(df.columns)
-                            ).properties(height=400)
-
+                        chart = alt.Chart(df).mark_bar().encode(
+                            x=alt.X(x, sort='-y'),
+                            y=y,
+                            tooltip=list(df.columns)
+                        ).properties(height=400)
+                        st.altair_chart(chart, use_container_width=True)
+                    else:  # Line chart
+                        y_candidates = [c for c in ["WindKPH","TempC","Humidity","FireScore","FloodScore"] if c in df.columns]
+                        y = y_candidates[0] if y_candidates else df.columns[-1]
+                        x = "City" if "City" in df.columns else df.columns[0]
+                        chart = alt.Chart(df).mark_line(point=True).encode(
+                            x=x, y=y, tooltip=list(df.columns)
+                        ).properties(height=400)
                         st.altair_chart(chart, use_container_width=True)
 
                     # Download CSV helper
                     csv = df.to_csv(index=False).encode("utf-8")
                     st.download_button("Download results as CSV", csv, file_name="risk_results.csv", mime="text/csv")
 
-                # If nothing chartable, show any plain-text summary
-                if not (html or results):
-                    st.write(data.get("summary_text") or data.get("summary") or "(No response returned)")
+                # Nothing at all? Show best-effort text.
+                if not (html or text_bits or results):
+                    st.write("(No response returned)")
+
+            with st.expander("Debug (payload & response)"):
+                st.code(json.dumps(payload, indent=2))
+                if 'data' in locals():
+                    st.code(json.dumps(data, indent=2))
 
             st.success("Received response from AI workflow")
         except requests.HTTPError as e:
@@ -362,7 +411,7 @@ with t3:
                 st.success(f"Coordinates filled from address (via {g_src}).")
                 st.rerun()
 
-# --- subscriber helpers (same behavior) ---
+# --- subscriber helpers ---
 def _subscribe():
     errs = []
     if not _valid_email(st.session_state["sub_email"]): errs.append("Please enter a valid email.")
