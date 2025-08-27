@@ -281,10 +281,9 @@ with t2:
 
     colL, colR = st.columns([3, 2])
     with colL:
-        question = st.text_area("Your request", height=110, placeholder="e.g., Top 5 NB cities by humidity today")
+        question = st.text_area("Your request", height=110, placeholder="e.g., Top 5 NB cities by humidity today or 'map fires near Halifax'")
     with colR:
         province = st.selectbox("Province filter", ["ALL", "NB", "NS", "PE", "NL"], index=0)
-        # Lookback + Output intentionally removed
 
     with st.expander("Examples you can ask"):
         st.markdown(
@@ -297,11 +296,21 @@ with t2:
             """
         )
 
-    ask = st.button("Ask AI", type="primary", disabled=not bool(risk_url))
+    ask = st.button("Ask AI", type="primary", disabled=not bool(risk_url or ai_fires_url))
     if ask:
         try:
-            wants_map = any(k in (question or "").lower() for k in ["map", "near", "around", "where is", "lat/long", "lat lon", "coordinates"]) \
-                        or " show on map" in (question or "").lower()
+            qlow = (question or "").lower()
+            wants_map = any(k in qlow for k in ["map", "near", "around", "where is", "lat/long", "lat lon", "coordinates"]) or " show on map" in qlow
+            wants_fires = any(k in qlow for k in ["fire", "fires", "active fire", "wildfire", "wild fire"]) or ("map" in qlow and "fire" in qlow)
+
+            # Choose endpoint: fire workflows for fire questions; otherwise risk
+            endpoint = None
+            if wants_fires and ai_fires_url:
+                endpoint = ai_fires_url
+            elif wants_fires and not ai_fires_url and ai_fires_summary_url:
+                endpoint = ai_fires_summary_url
+            else:
+                endpoint = risk_url  # may be AI risk or legacy risk
 
             payload = {
                 "question": (question or "").strip(),
@@ -310,51 +319,55 @@ with t2:
                 "from": "streamlit",
             }
 
-            if wants_map:
-                html = post_map_html(risk_url, payload, shared_secret or None, timeout=max(60, timeout_sec))
-                if not html.strip():
-                    st.warning("No map returned.")
-                else:
-                    components.html(html, height=820, scrolling=True)
+            # If endpoint is empty, fail early with a helpful message
+            if not endpoint:
+                st.error("No endpoint configured. Add N8N_AI_FIRES_URL or N8N_AI_RISK_URL in Secrets.")
             else:
-                data = post_json(risk_url, payload, shared_secret or None, timeout=max(60, timeout_sec))
-
-                title = data.get("title") or data.get("subject")
-                if title: st.markdown(f"### {title}")
-                html = data.get("summary_html") or data.get("html")
-                if isinstance(html, str) and html.strip():
-                    components.html(html, height=820, scrolling=True)
-
-                results = data.get("results") or []
-                if isinstance(results, list) and results:
-                    df = _results_to_df(results)
-
-                    metric = _pick_metric_from_question(question, df)
-                    top_n = _top_n_from_question(question, default=10)
-
-                    if metric and metric in df.columns and metric != "City":
-                        try:
-                            df[metric] = pd.to_numeric(df[metric], errors="coerce")
-                        except Exception:
-                            pass
-                        df = df.sort_values(metric, ascending=False).head(top_n)
-
-                    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-                    if len(df) < 2 or not numeric_cols:
-                        st.dataframe(df, use_container_width=True)
+                if wants_map:
+                    html = post_map_html(endpoint, payload, shared_secret or None, timeout=max(60, timeout_sec))
+                    if not (isinstance(html, str) and html.strip() and "<" in html):
+                        st.warning("No map returned from the workflow.")
                     else:
-                        x = "City" if "City" in df.columns else df.columns[0]
-                        y = metric if (metric and metric in df.columns and pd.api.types.is_numeric_dtype(df[metric])) else numeric_cols[0]
-                        chart = alt.Chart(df).mark_bar().encode(
-                            x=alt.X(x, sort='-y'), y=y, tooltip=list(df.columns)
-                        ).properties(height=400)
-                        st.altair_chart(chart, use_container_width=True)
+                        components.html(html, height=820, scrolling=True)
+                else:
+                    data = post_json(endpoint, payload, shared_secret or None, timeout=max(60, timeout_sec))
 
-                    csv = df.to_csv(index=False).encode("utf-8")
-                    st.download_button("Download results as CSV", csv, file_name="risk_results.csv", mime="text/csv")
+                    title = data.get("title") or data.get("subject")
+                    if title: st.markdown(f"### {title}")
+                    html = data.get("summary_html") or data.get("html")
+                    if isinstance(html, str) and html.strip():
+                        components.html(html, height=820, scrolling=True)
 
-                if not (html or results):
-                    st.write(data.get("summary_text") or data.get("summary") or "(No response returned)")
+                    results = data.get("results") or []
+                    if isinstance(results, list) and results:
+                        df = _results_to_df(results)
+
+                        metric = _pick_metric_from_question(question, df)
+                        top_n = _top_n_from_question(question, default=10)
+
+                        if metric and metric in df.columns and metric != "City":
+                            try:
+                                df[metric] = pd.to_numeric(df[metric], errors="coerce")
+                            except Exception:
+                                pass
+                            df = df.sort_values(metric, ascending=False).head(top_n)
+
+                        numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+                        if len(df) < 2 or not numeric_cols:
+                            st.dataframe(df, use_container_width=True)
+                        else:
+                            x = "City" if "City" in df.columns else df.columns[0]
+                            y = metric if (metric and metric in df.columns and pd.api.types.is_numeric_dtype(df[metric])) else numeric_cols[0]
+                            chart = alt.Chart(df).mark_bar().encode(
+                                x=alt.X(x, sort='-y'), y=y, tooltip=list(df.columns)
+                            ).properties(height=400)
+                            st.altair_chart(chart, use_container_width=True)
+
+                        csv = df.to_csv(index=False).encode("utf-8")
+                        st.download_button("Download results as CSV", csv, file_name="risk_results.csv", mime="text/csv")
+
+                    if not (html or results):
+                        st.write(data.get("summary_text") or data.get("summary") or "(No response returned)")
 
             st.success("Received response from AI workflow")
         except requests.HTTPError as e:
