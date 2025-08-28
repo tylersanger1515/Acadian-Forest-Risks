@@ -311,30 +311,30 @@ with right:
         except NameError:
             use_helper = False
 
-        google_key = st.secrets.get("GOOGLE_MAPS_API_KEY", "") if hasattr(st, "secrets") else ""
-        opencage_key = st.secrets.get("OPENCAGE_API_KEY", "") if hasattr(st, "secrets") else ""
+        g_key = google_key
+        oc_key = opencage_key
 
         for v in variants:
             try:
                 if use_helper:
-                    g = geocode_address(v, opencage_key, google_key)
+                    g = geocode_address(v, oc_key, g_key)
                     if g:
                         lat, lon, fmt, _src = g
                         return float(lat), float(lon), fmt
-                if google_key:
+                if g_key:
                     r = requests.get(
                         "https://maps.googleapis.com/maps/api/geocode/json",
-                        params={"address": v, "region": "ca", "key": google_key},
+                        params={"address": v, "region": "ca", "key": g_key},
                         timeout=10,
                     ).json()
                     if r.get("status") == "OK" and r.get("results"):
                         res = r["results"][0]
                         loc = res["geometry"]["location"]
                         return float(loc["lat"]), float(loc["lng"]), res.get("formatted_address", v)
-                if opencage_key:
+                if oc_key:
                     r = requests.get(
                         "https://api.opencagedata.com/geocode/v1/json",
-                        params={"q": v, "key": opencage_key, "limit": 1, "countrycode": "ca", "no_annotations": 1},
+                        params={"q": v, "key": oc_key, "limit": 1, "countrycode": "ca", "no_annotations": 1},
                         timeout=10,
                     ).json()
                     if r.get("results"):
@@ -422,6 +422,10 @@ with right:
                 m = re.search(r'(\d+)\s+of\s+the\s+largest', text)
                 if m: topN = int(m.group(1))
 
+            # If asking “largest” for a specific province, default to 1
+            if topN is None and ("largest" in text or "biggest" in text or "max" in text) and len(want_provs) == 1:
+                topN = 1
+
             # distance / proximity (order-agnostic)
             DEFAULT_NEAR_KM = 40.0
             want_within_km = None
@@ -430,6 +434,9 @@ with right:
 
             m_rad = re.search(r'within\s+(\d+(?:\.\d+)?)\s*km', text)
             if m_rad: want_within_km = float(m_rad.group(1))
+            # also handle "25 km near Halifax"
+            m_rad2 = re.search(r'(\d+(?:\.\d+)?)\s*km.*\bnear\b', text)
+            if m_rad2: want_within_km = float(m_rad2.group(1))
 
             m_place = (
                 re.search(r'within\s+\d+(?:\.\d+)?\s*km\s+of\s+(.+)', text) or
@@ -468,9 +475,9 @@ with right:
                 sub = []
                 for f in subset:
                     d = _date_iso(_started_s(f))
-                    if not d: 
+                    if not d:
                         continue
-                    if d_from and d < d_from: 
+                    if d_from and d < d_from:
                         continue
                     if d_to and d > d_to:
                         continue
@@ -508,8 +515,10 @@ with right:
                     st.info(f"No active fires within {want_within_km:.0f} km of {place_label}.")
                     st.stop()
 
-            # ----- special summaries -----
-            if "counts by province" in text or ("by province" in text and "count" in text):
+            # ----- special summaries (placed before generic listing) -----
+
+            # How many/Count ... by/per province
+            if (("how many" in text) or ("count" in text)) and (("by province" in text) or ("per province" in text)):
                 from collections import Counter
                 counts = Counter(_prov(f) for f in fires if _prov(f))
                 if counts:
@@ -520,6 +529,7 @@ with right:
                     st.info("No active fires found.")
                 st.stop()
 
+            # Most hectares burning (per province total)
             if "most hectares" in text or ("hectares" in text and "most" in text):
                 totals = {}
                 for f in fires:
@@ -533,6 +543,7 @@ with right:
                     st.info("No data.")
                 st.stop()
 
+            # Largest per province
             if ("largest" in text or "biggest" in text or "max" in text) and ("per province" in text or "each province" in text):
                 pool = subset if want_provs else fires
                 by_p = {}
