@@ -213,19 +213,179 @@ t1, t2, t3 = st.tabs(["🔥 Active Fires", "🧭 Risk Summary", "🚨 SAFER Fire
 # ===== TAB 1: ACTIVE FIRES =====
 with t1:
     st.subheader("Active Fires in the Acadian Region")
-    if st.button("Fetch Active Fires", type="primary", disabled=not bool(fires_url)):
-        try:
-            data = post_json(fires_url, {"from": "streamlit"}, shared_secret or None, timeout=timeout_sec)
-            html = data.get("summary_html")
-            if isinstance(html, str) and html.strip():
-                components.html(html, height=820, scrolling=True)
-            else:
-                st.write(data.get("summary") or data.get("summary_text") or "(No summary returned)")
-            st.success("Received response from n8n")
-        except requests.HTTPError as e:
-            st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
-        except Exception as e:
-            st.error(f"Failed: {e}")
+
+    left, right = st.columns([1, 1])
+
+    # ---------------- LEFT: existing summary table ----------------
+    with left:
+        if st.button("Fetch Active Fires", type="primary", disabled=not bool(fires_url)):
+            try:
+                data = post_json(fires_url, {"from": "streamlit"}, shared_secret or None, timeout=timeout_sec)
+                html = data.get("summary_html")
+                if isinstance(html, str) and html.strip():
+                    components.html(html, height=820, scrolling=True)
+                else:
+                    st.write(data.get("summary") or data.get("summary_text") or "(No summary returned)")
+                st.success("Received response from n8n")
+            except requests.HTTPError as e:
+                st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
+            except Exception as e:
+                st.error(f"Failed: {e}")
+
+    # ---------------- RIGHT: simple Q&A over fires[] --------------
+    with right:
+        st.markdown("#### Ask about today’s fires")
+        q = st.text_input(
+            "Your question",
+            placeholder="e.g., Which fires are Out of Control? | Province with most active fires? | Top 5 largest fires | Hectares since earliest start for NL, NB, NS"
+        )
+        ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
+
+        if ask:
+            try:
+                raw = post_json(fires_url, {"from": "streamlit"}, shared_secret or None, timeout=timeout_sec)
+                fires = raw.get("fires") or []
+                date_label = raw.get("date", "today")
+
+                # --- helpers ---
+                def norm(s): return (s or "").strip()
+                def prov(f): return norm((f.get("agency") or "").upper())
+                def status(f): return norm((f.get("control") or f.get("status") or "").lower())
+                def sizeha(f):
+                    try: return float(f.get("size_ha") or 0.0)
+                    except: return 0.0
+                def started_date(f):
+                    s = norm(f.get("started"))
+                    return s[:10] if len(s) >= 10 else s
+
+                from collections import Counter
+                import datetime as dt
+
+                def parse_date(s):
+                    try: return dt.date.fromisoformat(s[:10])
+                    except: return None
+
+                text = (q or "").lower()
+
+                # -------- canned intents (match by keywords) --------
+                if "out of control" in text or "ooc" in text:
+                    ooc = [f for f in fires if "out of control" in status(f)]
+                    if not ooc:
+                        st.info("No fires are Out of Control in the Acadian region.")
+                    else:
+                        st.markdown(f"**Fires Out of Control — {date_label} ({len(ooc)}):**")
+                        for f in ooc:
+                            st.write(f"- {f.get('name','(id?)')} — {prov(f)} · {sizeha(f):,.1f} ha · Started {started_date(f) or '—'}")
+
+                elif "being held" in text or "bh" in text:
+                    bh = [f for f in fires if "being held" in status(f)]
+                    if not bh:
+                        st.info("No fires are Being Held.")
+                    else:
+                        st.markdown(f"**Fires Being Held — {date_label} ({len(bh)}):**")
+                        for f in bh:
+                            st.write(f"- {f.get('name','(id?)')} — {prov(f)} · {sizeha(f):,.1f} ha · Started {started_date(f) or '—'}")
+
+                elif ("under control" in text) or ("uc" in text and "out of" not in text):
+                    uc = [f for f in fires if "under control" in status(f)]
+                    if not uc:
+                        st.info("No fires are Under Control.")
+                    else:
+                        st.markdown(f"**Fires Under Control — {date_label} ({len(uc)}):**")
+                        for f in uc:
+                            st.write(f"- {f.get('name','(id?)')} — {prov(f)} · {sizeha(f):,.1f} ha · Started {started_date(f) or '—'}")
+
+                elif "most active" in text or ("most" in text and "province" in text):
+                    counts = Counter(prov(f) for f in fires if prov(f))
+                    if counts:
+                        leader, n = counts.most_common(1)[0]
+                        st.markdown(f"**Province with the most active fires:** {leader} ({n}) — {date_label}")
+                        st.caption(", ".join(f"{p}: {c}" for p, c in counts.most_common()))
+                    else:
+                        st.info("No active fires found.")
+
+                elif "how many" in text and ("per province" in text or "by province" in text or "active fires" in text):
+                    counts = Counter(prov(f) for f in fires if prov(f))
+                    if counts:
+                        st.markdown(f"**Active fires by province — {date_label}:**")
+                        for p, c in counts.most_common():
+                            st.write(f"- {p}: {c}")
+                    else:
+                        st.info("No active fires found.")
+
+                elif "top" in text and "largest" in text:
+                    import re
+                    m = re.search(r"top\s+(\d+)", text)
+                    k = int(m.group(1)) if m else 5
+                    biggest = sorted(fires, key=sizeha, reverse=True)[:k]
+                    if not biggest:
+                        st.info("No fires found.")
+                    else:
+                        st.markdown(f"**Top {k} largest fires by Size (ha) — {date_label}:**")
+                        for f in biggest:
+                            st.write(f"- {f.get('name','(id?)')} — {prov(f)} · {sizeha(f):,.1f} ha · Started {started_date(f) or '—'}")
+
+                elif "hectare" in text or "ha" in text or "earliest start" in text:
+                    by_p = {"NL": [], "NB": [], "NS": []}
+                    for f in fires:
+                        p = prov(f)
+                        if p in by_p: by_p[p].append(f)
+
+                    lines = []
+                    for p, fs in by_p.items():
+                        if not fs:
+                            lines.append(f"- {p}: 0.0 ha (no fires)")
+                            continue
+                        dates = [parse_date(started_date(f)) for f in fs if parse_date(started_date(f))]
+                        if not dates:
+                            lines.append(f"- {p}: unknown (no valid start dates)")
+                            continue
+                        earliest = min(dates)
+                        total = sum(sizeha(f) for f in fs if parse_date(started_date(f)) and parse_date(started_date(f)) >= earliest)
+                        lines.append(f"- {p}: {total:,.1f} ha since {earliest.isoformat()}")
+                    st.markdown("**Hectares since each province’s earliest start date:**\n" + "\n".join(lines))
+                    st.caption(f"Data date: {date_label}")
+
+                elif "last 7 days" in text or "past 7 days" in text or "week" in text:
+                    today = dt.date.today()
+                    week_ago = today - dt.timedelta(days=7)
+                    recent = [f for f in fires if (parse_date(started_date(f)) or dt.date(1900,1,1)) >= week_ago]
+                    if not recent:
+                        st.info("No fires started in the last 7 days.")
+                    else:
+                        st.markdown(f"**Fires started in the last 7 days — {date_label}:**")
+                        for f in recent:
+                            st.write(f"- {f.get('name','(id?)')} — {prov(f)} · {sizeha(f):,.1f} ha · Started {started_date(f) or '—'}")
+
+                elif any(p in text for p in [" nb", " ns", " nl", " new brunswick", " nova scotia", " newfoundland"]):
+                    # Filter by province and optional control keyword
+                    want = []
+                    if " nb" in text or "new brunswick" in text: want.append("NB")
+                    if " ns" in text or "nova scotia" in text: want.append("NS")
+                    if " nl" in text or "newfoundland" in text: want.append("NL")
+
+                    subset = [f for f in fires if prov(f) in want] if want else fires
+                    if "out of control" in text: subset = [f for f in subset if "out of control" in status(f)]
+                    if "being held" in text: subset = [f for f in subset if "being held" in status(f)]
+                    if "under control" in text: subset = [f for f in subset if "under control" in status(f)]
+
+                    if not subset:
+                        st.info("No matching fires.")
+                    else:
+                        st.markdown("**Matching fires:**")
+                        for f in subset:
+                            st.write(f"- {f.get('name','(id?)')} — {prov(f)} · {sizeha(f):,.1f} ha · {f.get('control','—')} · Started {started_date(f) or '—'}")
+
+                else:
+                    # Default snapshot + quick tips
+                    ongoing = int(raw.get("count_ongoing") or len(fires))
+                    st.markdown(f"**Snapshot for {date_label}:** {ongoing} ongoing fire(s).")
+                    st.write("Try: *Which fires are Out of Control?* · *Province with most active fires?* · *Top 5 largest fires* · *Hectares since earliest start for NL, NB, NS*")
+
+            except requests.HTTPError as e:
+                st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
+            except Exception as e:
+                st.error(f"Failed: {e}")
 
 # ===== TAB 2: RISK SUMMARY =====
 with t2:
