@@ -417,14 +417,21 @@ with right:
             if re.search(r'\bnl\b|newfoundland', text): want.append("NL")
             subset = [f for f in fires if (_prov(f) in want)] if want else list(fires)
 
-            # control filter (synonyms)
-            want_ctrl = None
-            if any(x in text for x in ["out of control","ooc"]): want_ctrl = "out of control"
-            elif any(x in text for x in ["being held","bh"]):   want_ctrl = "being held"
-            elif ("under control" in text) or (re.search(r'\buc\b', text) and "out of" not in text)):
-                want_ctrl = "under control"
-            if want_ctrl:
-                subset = [f for f in subset if want_ctrl in _ctrl_text(f)]
+          # control filter (synonyms)
+want_ctrl = None
+text_norm = text.lower().replace("-", " ")
+
+if re.search(r"\bout of control\b|\booc\b|\buncontrolled\b|\bout of cntrol\b", text_norm):
+    want_ctrl = "out of control"
+elif re.search(r"\bbeing held\b|\bbh\b|\bheld\b|\bon hold\b", text_norm):
+    want_ctrl = "being held"
+elif re.search(r"\bunder control\b|\buc\b|\bin control\b|\bcontained\b|\bcontrolled\b", text_norm):
+    want_ctrl = "under control"
+
+if want_ctrl:
+    subset = [f for f in subset if want_ctrl in _ctrl_text(f)]
+
+
 
             # size range
             rng = parse_size_range(text)
