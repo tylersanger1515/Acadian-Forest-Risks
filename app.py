@@ -244,35 +244,6 @@ with t1:
         if ss.get("fires_html"):
             components.html(ss["fires_html"], height=820, scrolling=True)
 
-# ===== TAB 1: ACTIVE FIRES =====
-with t1:
-    st.subheader("Active Fires in the Acadian Region")
-
-    ss = st.session_state
-    ss.setdefault("fires_payload", None)
-    ss.setdefault("fires_html", None)
-
-    left, right = st.columns([1, 1])
-
-    # ---------------- LEFT: summary table ----------------
-    with left:
-        if st.button("Fetch Active Fires", type="primary", disabled=not bool(fires_url)):
-            try:
-                data = post_json(
-                    fires_url, {"from": "streamlit"}, shared_secret or None, timeout=timeout_sec
-                )
-                ss["fires_payload"] = data
-                ss["fires_html"] = data.get("summary_html") or ""
-                st.success("Received response from n8n")
-            except requests.HTTPError as e:
-                st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
-            except Exception as e:
-                st.error(f"Failed: {e}")
-
-        # Render the last table once (no duplicate rendering)
-        if ss.get("fires_html"):
-            components.html(ss["fires_html"], height=820, scrolling=True)
-
     # ================= RIGHT: Q&A + SAFETY CHECK =================
     with right:
         import re, math, datetime as dt, requests
