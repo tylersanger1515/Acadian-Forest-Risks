@@ -244,7 +244,7 @@ with t1:
         if ss.get("fires_html"):
             components.html(ss["fires_html"], height=820, scrolling=True)
 
-# ===================== TAB 1 — Q&A + Safety (complete block) =====================
+# ===================== TAB 1 — RIGHT (Q&A + Safety) =====================
 with right:
     import re, math, datetime as dt, requests
 
@@ -254,13 +254,13 @@ with right:
         placeholder=(
             "e.g., Which fires are Out of Control? | within 40 km of Halifax | "
             "fires over 25 ha in NB | top 5 largest | largest per province | "
-            "still 0.1 ha after 2 days | older than 3 days"
+            "still 0.1 ha after 5 days | older than eight days | started at least 5 days ago"
         ),
         key="q_fires",
     )
     ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
 
-    # -------- helpers (local to Tab 1) --------
+    # ---------------- helpers ----------------
     def _norm(s): return (s or "").strip()
     def _prov(f): return _norm((f.get("agency") or "").upper())
     def _ctrl_text(f): return _norm((f.get("control") or f.get("status") or "")).lower()
@@ -274,28 +274,29 @@ with right:
     def _lon(f):
         try: return float(f.get("lon"))
         except: return None
-
     def _date_iso(s):
-        try:
-            return dt.date.fromisoformat((s or "")[:10])
-        except Exception:
-            return None
+        try: return dt.date.fromisoformat((s or "")[:10])
+        except Exception: return None
 
     def haversine_km(lat1, lon1, lat2, lon2):
-        R = 6371.0
-        p = math.pi/180.0
-        dlat = (lat2-lat1)*p
-        dlon = (lon2-lon1)*p
+        R = 6371.0; p = math.pi/180.0
+        dlat = (lat2-lat1)*p; dlon = (lon2-lon1)*p
         a = math.sin(dlat/2)**2 + math.cos(lat1*p)*math.cos(lat2*p)*math.sin(dlon/2)**2
         return R*2*math.asin(math.sqrt(a))
 
-    # Robust geocoder focused on Canada (Google -> OpenCage). Assumes you already
-    # have geocode_address(…, opencage_key, google_key) in your file; if not,
-    # this will use OpenCage or Google directly if keys are set in secrets.
+    # word → digit for simple cardinal numbers (so “eight” works)
+    _NUMWORDS = {
+        "zero":0,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10,
+        "eleven":11,"twelve":12,"thirteen":13,"fourteen":14,"fifteen":15,"sixteen":16,"seventeen":17,"eighteen":18,"nineteen":19,"twenty":20
+    }
+    def _words_to_digits(s: str) -> str:
+        return re.sub(r'\b(' + '|'.join(_NUMWORDS.keys()) + r')\b',
+                      lambda m: str(_NUMWORDS[m.group(1)]), s)
+
+    # robust CA geocoder (Google → OpenCage → helper if available)
     def geocode_place(name: str):
         qtext = (name or "").strip()
-        if not qtext:
-            return None
+        if not qtext: return None
         variants = [
             qtext,
             f"{qtext}, Canada",
@@ -304,7 +305,6 @@ with right:
             f"{qtext} Regional Municipality, NS, Canada",
             f"{qtext} Regional Municipality, Nova Scotia, Canada",
         ]
-        # try helper if present
         try:
             _ = geocode_address
             use_helper = True
@@ -321,7 +321,6 @@ with right:
                     if g:
                         lat, lon, fmt, _src = g
                         return float(lat), float(lon), fmt
-                # fallback direct calls if helper not present
                 if google_key:
                     r = requests.get(
                         "https://maps.googleapis.com/maps/api/geocode/json",
@@ -348,43 +347,36 @@ with right:
 
     def parse_days_window(text: str):
         """Return (d_from, d_to, tag) for:
-           'last/past N days|weeks', 'older than / at least N days', 'N days ago'."""
+           'last/past N days|weeks', 'older than / at least N days (ago)', 'N days ago'."""
         s2 = (text or "").lower()
         end = _date_iso(st.session_state.get("fires_payload", {}).get("date")) or dt.date.today()
 
-        # last / past N days
-        m = re.search(r'(?:last|past)\s+(\d+)\s+day', s2)
-        if m:
-            d = int(m.group(1));  return (end - dt.timedelta(days=d), end, "past")
+        # last / past N days|weeks
+        m = re.search(r'(?:last|past)\s+(\d+)\s+day(?:s)?', s2)
+        if m: d = int(m.group(1));  return (end - dt.timedelta(days=d), end, "past")
+        m = re.search(r'(?:last|past)\s+(\d+)\s+week(?:s)?', s2)
+        if m: w = int(m.group(1));  return (end - dt.timedelta(days=7*w), end, "past")
 
-        # last / past N weeks
-        m = re.search(r'(?:last|past)\s+(\d+)\s+week', s2)
-        if m:
-            w = int(m.group(1));  return (end - dt.timedelta(days=7*w), end, "past")
-
-        # older than / at least N days
-        m = re.search(r'(?:older\s+than|at\s+least|>=)\s+(\d+)\s+day', s2)
-        if m:
-            d = int(m.group(1));  return (None, end - dt.timedelta(days=d), "older")
+        # older than / at least N days (optional 'ago')
+        m = re.search(r'(?:older\s+than|at\s+least|>=)\s+(\d+)\s+day(?:s)?(?:\s+ago)?', s2)
+        if m: d = int(m.group(1));  return (None, end - dt.timedelta(days=d), "older")
 
         # N days ago
         m = re.search(r'(\d+)\s+day(?:s)?\s+ago', s2)
-        if m:
-            d = int(m.group(1));  return (None, end - dt.timedelta(days=d), "older")
+        if m: d = int(m.group(1));  return (None, end - dt.timedelta(days=d), "older")
 
         return (None, None, "")
 
     if ask:
         try:
-            # fetch latest
             raw = st.session_state.get("fires_payload") or post_json(
                 fires_url, {"from": "streamlit"}, shared_secret or None, timeout=timeout_sec
             )
             fires = raw.get("fires") or []
             date_label = raw.get("date", "today")
 
-            # ---------------- parse query ----------------
-            text = (q or "").strip().lower()
+            # --- parse query text (normalize number words) ---
+            text = _words_to_digits((q or "").strip().lower())
 
             # province filters
             want_provs = []
@@ -397,7 +389,7 @@ with right:
             want_bh = ("being held" in text) or re.search(r'\bbh\b', text)
             want_uc = ("under control" in text) or (re.search(r'\buc\b', text) and "out of" not in text)
 
-            # size filters (over/under/between)
+            # size filters
             size_min = size_max = None
             m = re.search(r'over\s+(\d+(?:\.\d+)?)\s*ha', text)
             if m: size_min = float(m.group(1))
@@ -406,22 +398,23 @@ with right:
             m = re.search(r'between\s+(\d+(?:\.\d+)?)\s*ha\s*(?:and|-|to)\s*(\d+(?:\.\d+)?)\s*ha', text)
             if m:
                 a, b = float(m.group(1)), float(m.group(2))
-                size_min, size_max = min(a,b), max(a,b)
+                size_min, size_max = min(a, b), max(a, b)
 
             # date windows
             d_from, d_to, _tag = parse_days_window(text)
-            after_date = _date_iso(_norm(re.search(r'after\s+(\d{4}-\d{2}-\d{2})', text).group(1)) if re.search(r'after\s+\d{4}-\d{2}-\d{2}', text) else "")
-            before_date = _date_iso(_norm(re.search(r'before\s+(\d{4}-\d{2}-\d{2})', text).group(1)) if re.search(r'before\s+\d{4}-\d{2}-\d{2}', text) else "")
+            m = re.search(r'after\s+(\d{4}-\d{2}-\d{2})', text)
+            after_date = _date_iso(m.group(1)) if m else None
+            m = re.search(r'before\s+(\d{4}-\d{2}-\d{2})', text)
+            before_date = _date_iso(m.group(1)) if m else None
 
-            # still small quality check: "still 0.1 ha after 2 days"
-            still_small = bool(re.search(r'\bstill\b', text)) and bool(re.search(r'\bafter\s+\d+\s+day', text))
-            small_target = None
+            # "still 0.1 ha after 5 days"
+            still_small = bool(re.search(r'\bstill\b', text)) and bool(re.search(r'\bafter\s+\d+\s+day(?:s)?\b', text))
             m = re.search(r'still\s+(\d+(?:\.\d+)?)\s*ha', text)
-            if m: small_target = float(m.group(1))
-            m = re.search(r'after\s+(\d+)\s+day', text)
+            small_target = float(m.group(1)) if m else None
+            m = re.search(r'after\s+(\d+)\s+day(?:s)?', text)
             days_min = int(m.group(1)) if m else None
 
-            # TOP N / N of the largest/smallest
+            # top N / N of the largest
             topN = None
             m = re.search(r'top\s+(\d+)', text)
             if m: topN = int(m.group(1))
@@ -429,7 +422,8 @@ with right:
                 m = re.search(r'(\d+)\s+of\s+the\s+largest', text)
                 if m: topN = int(m.group(1))
 
-            # proximity parsing (order agnostic)
+            # distance / proximity (order-agnostic)
+            DEFAULT_NEAR_KM = 40.0
             want_within_km = None
             anchor = None
             place_label = ""
@@ -447,19 +441,16 @@ with right:
                 place_label = (anchor[2] if anchor else m_place.group(1).strip())
 
             if anchor and want_within_km is None and ("near" in text or "close to" in text):
-                want_within_km = 30.0
+                want_within_km = DEFAULT_NEAR_KM
 
-            # names only
             names_only = "names only" in text or "just names" in text
 
-            # begin with all fires
+            # ---- filtering pipeline ----
             subset = list(fires)
 
-            # province filter
             if want_provs:
                 subset = [f for f in subset if _prov(f) in want_provs]
 
-            # control filter
             if want_oc or want_bh or want_uc:
                 def _match_ctrl(f):
                     s = _ctrl_text(f)
@@ -468,13 +459,11 @@ with right:
                             (want_uc and "under control" in s))
                 subset = [f for f in subset if _match_ctrl(f)]
 
-            # size filter
             if size_min is not None:
                 subset = [f for f in subset if _sizeha(f) >= size_min]
             if size_max is not None:
                 subset = [f for f in subset if _sizeha(f) <= size_max]
 
-            # date window filters (by started date)
             if d_from or d_to:
                 sub = []
                 for f in subset:
@@ -487,12 +476,16 @@ with right:
                         continue
                     sub.append(f)
                 subset = sub
+
             if after_date:
                 subset = [f for f in subset if (_date_iso(_started_s(f)) or dt.date.min) > after_date]
             if before_date:
                 subset = [f for f in subset if (_date_iso(_started_s(f)) or dt.date.max) < before_date]
 
-            # still-small tolerance filter
+            if (d_from or d_to or after_date or before_date) and not subset:
+                st.info("No fires match that time window.")
+                st.stop()
+
             if still_small and small_target is not None and days_min is not None:
                 today = _date_iso(date_label) or dt.date.today()
                 tol = max(0.05, 0.01 * small_target)
@@ -502,7 +495,6 @@ with right:
                     and (today - (_date_iso(_started_s(f)) or today)).days >= days_min
                 ]
 
-            # distance sorting/filtering
             if anchor:
                 lat0, lon0, place_label = float(anchor[0]), float(anchor[1]), anchor[2]
                 cands = [f for f in subset if _lat(f) is not None and _lon(f) is not None]
@@ -512,10 +504,11 @@ with right:
                     cands = [f for f in cands if f["_dist_km"] <= want_within_km]
                 cands.sort(key=lambda x: x["_dist_km"])
                 subset = cands
+                if want_within_km is not None and not subset:
+                    st.info(f"No active fires within {want_within_km:.0f} km of {place_label}.")
+                    st.stop()
 
             # ----- special summaries -----
-
-            # counts by province
             if "counts by province" in text or ("by province" in text and "count" in text):
                 from collections import Counter
                 counts = Counter(_prov(f) for f in fires if _prov(f))
@@ -527,13 +520,11 @@ with right:
                     st.info("No active fires found.")
                 st.stop()
 
-            # most hectares by province
             if "most hectares" in text or ("hectares" in text and "most" in text):
                 totals = {}
                 for f in fires:
                     p = _prov(f)
-                    if p:
-                        totals[p] = totals.get(p, 0.0) + _sizeha(f)
+                    if p: totals[p] = totals.get(p, 0.0) + _sizeha(f)
                 if totals:
                     leader = max(totals, key=totals.get)
                     st.markdown(f"**Most hectares burning:** {leader} — {totals[leader]:,.1f} ha — {date_label}")
@@ -542,14 +533,12 @@ with right:
                     st.info("No data.")
                 st.stop()
 
-            # largest per province
             if ("largest" in text or "biggest" in text or "max" in text) and ("per province" in text or "each province" in text):
                 pool = subset if want_provs else fires
                 by_p = {}
                 for f in pool:
                     p = _prov(f)
-                    if not p: 
-                        continue
+                    if not p: continue
                     if p not in by_p or _sizeha(f) > _sizeha(by_p[p]):
                         by_p[p] = f
                 if not by_p:
@@ -561,7 +550,6 @@ with right:
                         st.write(f"- {p}: {f.get('name')} · {_sizeha(f):,.1f} ha · {f.get('control','—')} · Started {_started_s(f) or '—'}")
                 st.stop()
 
-            # names only
             if names_only:
                 if not subset:
                     st.info("No matching fires.")
@@ -570,14 +558,13 @@ with right:
                     st.write(", ".join(sorted({_norm(f.get('name')) for f in subset})))
                 st.stop()
 
-            # default rendering (with optional topN)
             if topN is not None and topN > 0:
                 subset = sorted(subset, key=_sizeha, reverse=True)[:topN]
 
             if not subset:
                 ongoing = int(raw.get("count_ongoing") or len(fires))
                 st.markdown(f"**Snapshot for {date_label}:** {ongoing} ongoing fire(s).")
-                st.write("Try: *fires over 20 ha in NB* · *closest to Truro* · *within 40 km of Halifax* · *top 5 largest in NS* · *started last 7 days* · *older than 3 days* · *still 0.1 ha after 2 days*")
+                st.write("Try: *fires over 20 ha in NB* · *closest to Truro* · *within 40 km of Halifax* · *top 5 largest in NS* · *started last 7 days* · *older than 3 days* · *still 0.1 ha after 5 days*")
                 st.stop()
 
             st.markdown(f"**Matches — {date_label} ({len(subset)}):**")
@@ -585,14 +572,12 @@ with right:
                 extra = f" · {f['_dist_km']:.1f} km" if "_dist_km" in f else ""
                 st.write(f"- {f.get('name')} — {_prov(f)} · {_sizeha(f):,.1f} ha · {f.get('control','—')} · Started {_started_s(f) or '—'}{extra}")
 
-            # quick footer
-            if subset:
-                total = sum(_sizeha(f) for f in subset)
-                st.caption(
-                    f"Total size: {total:,.1f} ha · "
-                    f"Earliest start: {min((_date_iso(_started_s(f)) for f in subset if _date_iso(_started_s(f))), default=None) or '—'} · "
-                    f"Newest start: {max((_date_iso(_started_s(f)) for f in subset if _date_iso(_started_s(f))), default=None) or '—'}"
-                )
+            total = sum(_sizeha(f) for f in subset)
+            st.caption(
+                f"Total size: {total:,.1f} ha · "
+                f"Earliest start: {min((_date_iso(_started_s(f)) for f in subset if _date_iso(_started_s(f))), default=None) or '—'} · "
+                f"Newest start: {max((_date_iso(_started_s(f)) for f in subset if _date_iso(_started_s(f))), default=None) or '—'}"
+            )
 
         except requests.HTTPError as e:
             st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
@@ -604,12 +589,12 @@ with right:
     st.markdown("#### Safety check (40 km)")
 
     RADIUS_KM = 40.0
-   loc_in = st.text_input(
-    "Your community or coordinates",
-    placeholder="e.g., Halifax NS  |  Moncton  |  44.65,-63.57  • Tip: include your postal code for best accuracy (e.g., B3H 1X1)",
-    key="safety_place",
-)
-st.caption("Tip: For the most accurate location, include your postal code (e.g., 'Halifax B3H 1X1', 'Moncton E1C 1A1').")
+    loc_in = st.text_input(
+        "Your community or coordinates",
+        placeholder="e.g., Halifax NS  |  Moncton  |  44.65,-63.57  • Tip: include your postal code for best accuracy (e.g., B3H 1X1)",
+        key="safety_place",
+    )
+    st.caption("Tip: For the most accurate location, include your postal code (e.g., 'Halifax B3H 1X1', 'Moncton E1C 1A1').")
 
     colA, colB = st.columns([1, 3])
     check_btn = colA.button("Check 40 km", key="safety_check", disabled=not bool(fires_url))
@@ -625,14 +610,23 @@ st.caption("Tip: For the most accurate location, include your postal code (e.g.,
         st.markdown(
             """
 **If a wildfire is near you (≤40 km):**
-- **Activate the SAFER fire alert for critical proximity alerts**
 - **Call 911** if you see fire/smoke threatening people or property, or if told to evacuate.
 - **Contact your provincial forestry / wildfire line** to report details if safe to do so.
 - **Prepare a go-bag** for each person: ID, meds/prescriptions, phone/chargers, cash, water & snacks, clothing, sturdy shoes, flashlight, important docs (USB/photo), pet supplies, masks (N95), eyeglasses.
 - **Get ready to leave quickly:** keep your vehicle fueled, park facing the road, know **two ways out**, share plans with family.
 - **Harden your home (only if safe):** close windows/vents, remove flammables from deck, wet vegetation, keep hoses ready.
+- **Activate the SAFER fire alert for critical proximity alerts.**
             """
         )
+        with st.expander("Preparedness checklist (if not under immediate threat)"):
+            st.markdown(
+                """
+- Make a family communication & evacuation plan (pets included).
+- Assemble go-bags and keep copies of critical documents.
+- Clear debris within 1–2 m of structures; trim dry brush; store fuel away from the house.
+- Keep an N95 supply for smoke days; monitor air quality if sensitive.
+                """
+            )
 
     if check_btn:
         try:
@@ -654,7 +648,7 @@ st.caption("Tip: For the most accurate location, include your postal code (e.g.,
                     anchor = (float(g[0]), float(g[1]), g[2])
 
             if not anchor:
-                st.info("Couldn't locate that place. Try including the province, e.g., 'Halifax NS'.")
+                st.info("Couldn't locate that place. Try including the province or your postal code, e.g., 'Halifax B3H 1X1'.")
                 st.stop()
 
             lat0, lon0, place_lbl = anchor
