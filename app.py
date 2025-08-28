@@ -244,8 +244,7 @@ with t1:
         if ss.get("fires_html"):
             components.html(ss["fires_html"], height=820, scrolling=True)
 
-    # ================= RIGHT: Q&A + SAFETY CHECK =================
-
+   # ================= RIGHT: Q&A + SAFETY CHECK =================
 with right:
     import re, math, datetime as dt, requests
 
@@ -261,7 +260,7 @@ with right:
     )
     ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
 
-    # ---------- tiny helpers ----------
+    # ---------- helpers ----------
     def _norm(s): return (s or "").strip()
     def _prov(f): return _norm((f.get("agency") or "").upper())
     def _ctrl_text(f): return _norm((f.get("control") or f.get("status") or "")).lower()
@@ -292,19 +291,23 @@ with right:
         base += f" · Started {_started_s(f) or '—'}"
         return base
 
-    # ----- number words -> ints for days parsing -----
+    # number words → ints for days parsing
     _NUM_WORDS = {
         "one":1, "two":2, "three":3, "four":4, "five":5,
         "six":6, "seven":7, "eight":8, "nine":9, "ten":10,
         "eleven":11, "twelve":12, "thirteen":13, "fourteen":14,
     }
     def _num_from_words(t:str) -> str:
-        def repl(m): return str(_NUM_WORDS.get(m.group(0), m.group(0)))
-        return re.sub(r'\b(' + "|".join(_NUM_WORDS.keys()) + r')\b', repl, t)
+        if not _NUM_WORDS: return t
+        return re.sub(
+            r'\b(' + "|".join(_NUM_WORDS.keys()) + r')\b',
+            lambda m: str(_NUM_WORDS[m.group(1)]),
+            t or "",
+        )
 
     # size phrases
     def parse_size_range(text):
-        t = text.lower()
+        t = (text or "").lower()
         nums = [float(x) for x in re.findall(r'(\d+(?:\.\d+)?)\s*ha?', t)]
         if "between" in t and "and" in t and len(nums) >= 2:
             a, b = sorted(nums[:2]); return ("between", a, b)
@@ -328,14 +331,13 @@ with right:
         if m: d = int(m.group(1));  return (None, end - dt.timedelta(days=d), "older")
         m = re.search(r'(\d+)\s+day(?:s)?\s+ago', s2)
         if m: d = int(m.group(1));  return (None, end - dt.timedelta(days=d), "older")
-        # shortcuts
         if "last week" in s2 or "past week" in s2: return (end - dt.timedelta(days=7), end, "past")
         if "last 7 days" in s2: return (end - dt.timedelta(days=7), end, "past")
         return (None, None, "")
 
     # geo intent parsing (many phrasings)
     def parse_geo(text):
-        t = text.lower().strip()
+        t = (text or "").lower().strip()
         # within 40 km of Halifax / 40 km near Halifax / 40km away from Halifax / 40km from Halifax
         m = re.search(r'within\s+(\d+(?:\.\d+)?)\s*km\s+(?:of|from)\s+(.+)', t)
         if m: return ("within", float(m.group(1)), m.group(2).strip())
@@ -351,18 +353,17 @@ with right:
         if m: return ("within", 40.0, m.group(1).strip())
         return (None, None, None)
 
-    # geocode using your app helper when available
+    # geocode using app helper when available
     def geocode_place(name: str):
         qtext = (name or "").strip()
         if not qtext: return None
         qtext = re.sub(r'\bwithin\s+\d+(?:\.\d+)?\s*km\b', '', qtext, flags=re.I).strip(",.;: ")
         try:
-            _ = geocode_address
-            g = geocode_address(qtext, opencage_key, google_key)
+            g = geocode_address(qtext, opencage_key, google_key)  # uses the app's helper
             if g: return float(g[0]), float(g[1]), g[2]
-        except NameError:
+        except Exception:
             pass
-        # fallbacks (Google then OpenCage) if helper unavailable
+        # fallbacks (in case helper is not available)
         try:
             if google_key:
                 r = requests.get(
@@ -399,44 +400,35 @@ with right:
             f["_dist_km"] = d
         return fs, True, label
 
-    # Q&A renderer (no st.stop — Safety Check always renders)
-def render_qna(q, fires_url, shared_secret, timeout_sec):
-    import re
-    try:
-        raw = st.session_state.get("fires_payload") or post_json(
-            fires_url, {"from": "streamlit"}, shared_secret or None, timeout=timeout_sec
-        )
-        fires = raw.get("fires") or []
-        date_label = raw.get("date", "today")
+    # ---------- Q&A ----------
+    def render_qna(q_text: str):
+        try:
+            raw = st.session_state.get("fires_payload") or post_json(
+                fires_url, {"from": "streamlit"}, shared_secret or None, timeout=timeout_sec
+            )
+            fires = raw.get("fires") or []
+            date_label = raw.get("date", "today")
 
-        text = (q or "").lower().strip()
+            text = (q_text or "").lower().strip()
 
-        # --- province filters (support multiple)
-        want = []
-        if re.search(r'\bnb\b|new brunswick', text): want.append("NB")
-        if re.search(r'\bns\b|nova scotia', text):  want.append("NS")
-        if re.search(r'\bnl\b|newfoundland', text): want.append("NL")
-        subset = [f for f in fires if (_prov(f) in want)] if want else list(fires)
+            # province filters (support multiple)
+            want = []
+            if re.search(r'\bnb\b|new brunswick', text): want.append("NB")
+            if re.search(r'\bns\b|nova scotia', text):  want.append("NS")
+            if re.search(r'\bnl\b|newfoundland', text): want.append("NL")
+            subset = [f for f in fires if (_prov(f) in want)] if want else list(fires)
 
-        # --- control filter (synonyms)
-        want_ctrl = None
-        text_norm = text.replace("-", " ")
-        if re.search(r"\bout of control\b|\booc\b", text_norm):
-            want_ctrl = "out of control"
-        elif re.search(r"\bbeing held\b|\bbh\b|\bheld\b", text_norm):
-            want_ctrl = "being held"
-        elif re.search(r"\bunder control\b|\buc\b|\bcontained\b|\bcontrolled\b", text_norm):
-            want_ctrl = "under control"
-        if want_ctrl:
-            subset = [f for f in subset if want_ctrl in _ctrl_text(f)]
-
-        # ---- your remaining Q&A logic continues here ----
-        # (size filters, distance/closest, top-N, recency windows, growth, generic list, etc.)
-        # Make sure you render with st.write/st.markdown like before.
-
-    except Exception as e:
-        st.warning(f"Couldn’t answer that right now ({e}).")
-        return
+            # control filter (synonyms)
+            want_ctrl = None
+            text_norm = text.replace("-", " ")
+            if re.search(r"\bout of control\b|\booc\b", text_norm):
+                want_ctrl = "out of control"
+            elif re.search(r"\bbeing held\b|\bbh\b|\bheld\b", text_norm):
+                want_ctrl = "being held"
+            elif re.search(r"\bunder control\b|\buc\b|\bcontained\b|\bcontrolled\b", text_norm):
+                want_ctrl = "under control"
+            if want_ctrl:
+                subset = [f for f in subset if want_ctrl in _ctrl_text(f)]
 
             # size range
             rng = parse_size_range(text)
@@ -449,7 +441,7 @@ def render_qna(q, fires_url, shared_secret, timeout_sec):
                     subset = [f for f in subset if _sizeha(f) <= rng[1]]
 
             # time window
-            d_from, d_to, tag = parse_days_window(text)
+            d_from, d_to, _tag = parse_days_window(text)
             if d_from or d_to:
                 def in_window(f):
                     d = _date_iso(_started_s(f))
@@ -459,8 +451,9 @@ def render_qna(q, fires_url, shared_secret, timeout_sec):
                     return True
                 subset = [f for f in subset if in_window(f)]
 
-            # total hectares by province
-            if ("hectare" in text or "ha" in text or "burnt" in text or "burned" in text) and ("by province" in text or "per province" in text or ("province" in text and "total" in text)):
+            # totals by province (hectares)
+            if (any(w in text for w in ["hectare","ha","burnt","burned"])
+                and ("by province" in text or "per province" in text or ("province" in text and "total" in text))):
                 totals = {}
                 for f in fires:
                     p = _prov(f)
@@ -474,7 +467,8 @@ def render_qna(q, fires_url, shared_secret, timeout_sec):
                 return
 
             # counts by province
-            if ("how many" in text or "count" in text or "number of" in text) and ("by province" in text or "per province" in text):
+            if (("how many" in text or "count" in text or "number of" in text) and
+                ("by province" in text or "per province" in text)):
                 from collections import Counter
                 counts = Counter(_prov(f) for f in fires if _prov(f))
                 if counts:
@@ -508,7 +502,7 @@ def render_qna(q, fires_url, shared_secret, timeout_sec):
                 for f in biggest: st.write(fmt_fire_line(f))
                 return
 
-            # “largest fire in …” (or when province filter provided)
+            # largest in a province / current subset
             if "largest" in text and (" in " in text or want):
                 if not subset: st.info("No matching fires."); return
                 f = max(subset, key=_sizeha)
@@ -566,7 +560,7 @@ def render_qna(q, fires_url, shared_secret, timeout_sec):
                 for f in fs: st.write(fmt_fire_line(f, show_km=True))
                 return
 
-            # province-only/control-only listings
+            # province-only / control-only listings
             if want_ctrl:
                 if not subset: st.info("No matching fires."); return
                 st.markdown(f"**{want_ctrl.title()} — {date_label} ({len(subset)}):**")
@@ -591,13 +585,93 @@ def render_qna(q, fires_url, shared_secret, timeout_sec):
                 "Try: *fires over 20 ha in NB* · *closest to Truro* · *within 40 km of Halifax* · "
                 "*top 5 largest in NS* · *started last 7 days* · *older than 3 days* · *still 0.1 ha after 5 days*"
             )
+
         except requests.HTTPError as e:
             st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
         except Exception as e:
-            st.error(f"Failed: {e}")
+            st.warning(f"Couldn’t answer that right now ({e}).")
 
     if ask:
-        render_qna()
+        render_qna(q)
+
+    # ---------------- SAFETY CHECK (always shows) ----------------
+    st.divider()
+    st.markdown("#### Safety check (40 km)")
+
+    RADIUS_KM = 40.0
+    loc_in = st.text_input(
+        "Your community or coordinates",
+        placeholder="e.g., Halifax NS  |  Moncton  |  44.65,-63.57  • Tip: include your postal code for best accuracy (e.g., B3H 1X1)",
+        key="safety_place",
+    )
+    st.caption("Tip: For the most accurate location, include your postal code (e.g., 'B3H 1X1', 'E1C 1A1').")
+
+    colA, colB = st.columns([1, 3])
+    check_btn = colA.button("Check 40 km", key="safety_check", disabled=not bool(fires_url))
+
+    def _parse_latlon(s: str):
+        try:
+            a, b = [t.strip() for t in (s or "").split(",")]
+            return float(a), float(b)
+        except Exception:
+            return None
+
+    def _guidance_block():
+        st.markdown(
+            """
+**If a wildfire is near you (≤40 km):**
+- **Call 911** if you see fire/smoke threatening people or property, or if told to evacuate.
+- **Contact your provincial forestry / wildfire line** to report details if safe to do so.
+- **Prepare a go-bag** for each person: ID, meds/prescriptions, phone/chargers, cash, water & snacks, clothing, sturdy shoes, flashlight, important docs (USB/photo), pet supplies, masks (N95), eyeglasses.
+- **Get ready to leave quickly:** keep your vehicle fueled, park facing the road, know **two ways out**, share plans with family.
+- **Harden your home (only if safe):** close windows/vents, remove flammables from deck, wet vegetation, keep hoses ready.
+- **Activate the SAFER fire alert for critical proximity alerts.**
+            """
+        )
+
+    if check_btn:
+        try:
+            raw = st.session_state.get("fires_payload") or post_json(
+                fires_url, {"from": "safety"}, shared_secret or None, timeout=timeout_sec
+            )
+            fires = raw.get("fires") or []
+            if not loc_in.strip():
+                st.info("Enter a community or coordinates first.")
+            else:
+                anchor = None
+                ll = _parse_latlon(loc_in)
+                if ll:
+                    anchor = (ll[0], ll[1], f"{ll[0]:.4f}, {ll[1]:.4f}")
+                else:
+                    g = geocode_place(loc_in)
+                    if g: anchor = (float(g[0]), float(g[1]), g[2])
+
+                if not anchor:
+                    st.info("Couldn't locate that place. Try including the province or your postal code, e.g., 'Halifax B3H 1X1'.")
+                else:
+                    lat0, lon0, place_lbl = anchor
+                    cands = [f for f in fires if _lat(f) is not None and _lon(f) is not None]
+                    for f in cands:
+                        f["_dist_km"] = haversine_km(lat0, lon0, _lat(f), _lon(f))
+                    nearby = [f for f in cands if f["_dist_km"] <= RADIUS_KM]
+                    nearby.sort(key=lambda x: x["_dist_km"])
+
+                    if nearby:
+                        st.error(f"⚠️ {len(nearby)} active fire(s) within {RADIUS_KM:.0f} km of {place_lbl}")
+                        for f in nearby:
+                            st.write(
+                                f"- {f.get('name')} — {_prov(f)} · {_sizeha(f):,.1f} ha · {f.get('control','—')} · "
+                                f"{f['_dist_km']:.1f} km away · Started {_started_s(f) or '—'}"
+                            )
+                        _guidance_block()
+                    else:
+                        st.success(f"No active fires within {RADIUS_KM:.0f} km of {place_lbl} right now.")
+                        with st.expander("Be prepared anyway (quick tips)"):
+                            _guidance_block()
+        except requests.HTTPError as e:
+            st.error(f"HTTP error: {e.response.status_code} {e.response.text[:300]}")
+        except Exception as e:
+            st.error(f"Check failed: {e}")
 
     # ---------------- SAFETY CHECK (always shows) ----------------
     st.divider()
