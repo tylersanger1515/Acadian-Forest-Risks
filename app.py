@@ -370,7 +370,7 @@ with right:
 
         return (None, None, "")
 
-   if ask:
+if ask:
     try:
         raw = post_json(fires_url, {"from": "streamlit"}, shared_secret or None, timeout=timeout_sec)
         fires = raw.get("fires") or []
