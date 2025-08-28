@@ -604,11 +604,13 @@ with right:
     st.markdown("#### Safety check (40 km)")
 
     RADIUS_KM = 40.0
-    loc_in = st.text_input(
-        "Your community or coordinates",
-        placeholder="e.g., Halifax NS  |  Moncton  |  44.65,-63.57",
-        key="safety_place",
-    )
+   loc_in = st.text_input(
+    "Your community or coordinates",
+    placeholder="e.g., Halifax NS  |  Moncton  |  44.65,-63.57  • Tip: include your postal code for best accuracy (e.g., B3H 1X1)",
+    key="safety_place",
+)
+st.caption("Tip: For the most accurate location, include your postal code (e.g., 'Halifax B3H 1X1', 'Moncton E1C 1A1').")
+
     colA, colB = st.columns([1, 3])
     check_btn = colA.button("Check 40 km", key="safety_check", disabled=not bool(fires_url))
 
@@ -623,12 +625,12 @@ with right:
         st.markdown(
             """
 **If a wildfire is near you (≤40 km):**
+- **Activate the SAFER fire alert for critical proximity alerts**
 - **Call 911** if you see fire/smoke threatening people or property, or if told to evacuate.
 - **Contact your provincial forestry / wildfire line** to report details if safe to do so.
 - **Prepare a go-bag** for each person: ID, meds/prescriptions, phone/chargers, cash, water & snacks, clothing, sturdy shoes, flashlight, important docs (USB/photo), pet supplies, masks (N95), eyeglasses.
 - **Get ready to leave quickly:** keep your vehicle fueled, park facing the road, know **two ways out**, share plans with family.
 - **Harden your home (only if safe):** close windows/vents, remove flammables from deck, wet vegetation, keep hoses ready.
-- **Stay informed:** follow local emergency alerts / provincial wildfire updates / radio. Obey evacuation notices immediately.
             """
         )
 
