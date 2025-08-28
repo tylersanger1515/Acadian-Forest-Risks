@@ -244,7 +244,7 @@ with t1:
         if ss.get("fires_html"):
             components.html(ss["fires_html"], height=820, scrolling=True)
 
-# ===================== TAB 1 — RIGHT (Q&A + Safety) =====================
+# ===================== TAB 1 — RIGHT (Q&A only) =====================
 with right:
     import re, math, datetime as dt, requests
 
@@ -260,7 +260,7 @@ with right:
     )
     ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
 
-    # ---------------- helpers ----------------
+    # ---------- helpers ----------
     def _norm(s): return (s or "").strip()
     def _prov(f): return _norm((f.get("agency") or "").upper())
     def _ctrl_text(f): return _norm((f.get("control") or f.get("status") or "")).lower()
@@ -284,7 +284,7 @@ with right:
         a = math.sin(dlat/2)**2 + math.cos(lat1*p)*math.cos(lat2*p)*math.sin(dlon/2)**2
         return R*2*math.asin(math.sqrt(a))
 
-    # word → digit for simple cardinal numbers (so “eight” works)
+    # word→digit so “eight days” works
     _NUMWORDS = {
         "zero":0,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10,
         "eleven":11,"twelve":12,"thirteen":13,"fourteen":14,"fifteen":15,"sixteen":16,"seventeen":17,"eighteen":18,"nineteen":19,"twenty":20
@@ -293,10 +293,22 @@ with right:
         return re.sub(r'\b(' + '|'.join(_NUMWORDS.keys()) + r')\b',
                       lambda m: str(_NUMWORDS[m.group(1)]), s)
 
-    # robust CA geocoder (Google → OpenCage → helper if available)
+    # robust geocoder (uses app-level geocode_address if available)
     def geocode_place(name: str):
         qtext = (name or "").strip()
         if not qtext: return None
+        # strip trailing “within 40 km” if user wrote “near Halifax within 40 km”
+        qtext = re.sub(r'\bwithin\s+\d+(?:\.\d+)?\s*km\b', '', qtext, flags=re.I).strip(",.;: ")
+
+        try:
+            _ = geocode_address
+            use_helper = True
+        except NameError:
+            use_helper = False
+
+        gkey = google_key
+        ockey = opencage_key
+
         variants = [
             qtext,
             f"{qtext}, Canada",
@@ -305,36 +317,27 @@ with right:
             f"{qtext} Regional Municipality, NS, Canada",
             f"{qtext} Regional Municipality, Nova Scotia, Canada",
         ]
-        try:
-            _ = geocode_address
-            use_helper = True
-        except NameError:
-            use_helper = False
-
-        g_key = google_key
-        oc_key = opencage_key
-
         for v in variants:
             try:
                 if use_helper:
-                    g = geocode_address(v, oc_key, g_key)
+                    g = geocode_address(v, ockey, gkey)
                     if g:
                         lat, lon, fmt, _src = g
                         return float(lat), float(lon), fmt
-                if g_key:
+                if gkey:
                     r = requests.get(
                         "https://maps.googleapis.com/maps/api/geocode/json",
-                        params={"address": v, "region": "ca", "key": g_key},
+                        params={"address": v, "region": "ca", "key": gkey},
                         timeout=10,
                     ).json()
                     if r.get("status") == "OK" and r.get("results"):
                         res = r["results"][0]
                         loc = res["geometry"]["location"]
                         return float(loc["lat"]), float(loc["lng"]), res.get("formatted_address", v)
-                if oc_key:
+                if ockey:
                     r = requests.get(
                         "https://api.opencagedata.com/geocode/v1/json",
-                        params={"q": v, "key": oc_key, "limit": 1, "countrycode": "ca", "no_annotations": 1},
+                        params={"q": v, "key": ockey, "limit": 1, "countrycode": "ca", "no_annotations": 1},
                         timeout=10,
                     ).json()
                     if r.get("results"):
@@ -414,7 +417,7 @@ with right:
             m = re.search(r'after\s+(\d+)\s+day(?:s)?', text)
             days_min = int(m.group(1)) if m else None
 
-            # top N / N of the largest
+            # top N / "N of the largest"
             topN = None
             m = re.search(r'top\s+(\d+)', text)
             if m: topN = int(m.group(1))
@@ -422,21 +425,15 @@ with right:
                 m = re.search(r'(\d+)\s+of\s+the\s+largest', text)
                 if m: topN = int(m.group(1))
 
-            # If asking “largest” for a specific province, default to 1
-            if topN is None and ("largest" in text or "biggest" in text or "max" in text) and len(want_provs) == 1:
-                topN = 1
-
-            # distance / proximity (order-agnostic)
+            # distance / proximity
             DEFAULT_NEAR_KM = 40.0
             want_within_km = None
             anchor = None
             place_label = ""
+            asked_closest = bool(re.search(r'\b(closest|nearest)\b', text))
 
             m_rad = re.search(r'within\s+(\d+(?:\.\d+)?)\s*km', text)
             if m_rad: want_within_km = float(m_rad.group(1))
-            # also handle "25 km near Halifax"
-            m_rad2 = re.search(r'(\d+(?:\.\d+)?)\s*km.*\bnear\b', text)
-            if m_rad2: want_within_km = float(m_rad2.group(1))
 
             m_place = (
                 re.search(r'within\s+\d+(?:\.\d+)?\s*km\s+of\s+(.+)', text) or
@@ -444,15 +441,15 @@ with right:
                 re.search(r'(?:near|close to)\s+(.+)', text)
             )
             if m_place:
-                anchor = geocode_place(m_place.group(1))
-                place_label = (anchor[2] if anchor else m_place.group(1).strip())
+                ptxt = re.sub(r'\bwithin\s+\d+(?:\.\d+)?\s*km\b', '', m_place.group(1), flags=re.I).strip(",.;: ")
+                anchor = geocode_place(ptxt)
+                place_label = (anchor[2] if anchor else ptxt)
 
-            if anchor and want_within_km is None and ("near" in text or "close to" in text):
-                want_within_km = DEFAULT_NEAR_KM
-
+            if anchor and want_within_km is None and ("near" in text or "close to" in text or asked_closest):
+                want_within_km = None  # “closest to …” without radius => show nearest few
             names_only = "names only" in text or "just names" in text
 
-            # ---- filtering pipeline ----
+            # ---------- filtering pipeline ----------
             subset = list(fires)
 
             if want_provs:
@@ -475,9 +472,9 @@ with right:
                 sub = []
                 for f in subset:
                     d = _date_iso(_started_s(f))
-                    if not d:
+                    if not d: 
                         continue
-                    if d_from and d < d_from:
+                    if d_from and d < d_from: 
                         continue
                     if d_to and d > d_to:
                         continue
@@ -510,15 +507,17 @@ with right:
                 if want_within_km is not None:
                     cands = [f for f in cands if f["_dist_km"] <= want_within_km]
                 cands.sort(key=lambda x: x["_dist_km"])
+                # If they asked for “closest …” without a radius, cap to the nearest 12
+                if asked_closest and want_within_km is None:
+                    cands = cands[:12]
                 subset = cands
                 if want_within_km is not None and not subset:
                     st.info(f"No active fires within {want_within_km:.0f} km of {place_label}.")
                     st.stop()
 
-            # ----- special summaries (placed before generic listing) -----
-
-            # How many/Count ... by/per province
-            if (("how many" in text) or ("count" in text)) and (("by province" in text) or ("per province" in text)):
+            # ---------- special summaries (place ABOVE generic listing) ----------
+            # 1) counts by province
+            if ("how many" in text or "count" in text) and ("by province" in text or "per province" in text):
                 from collections import Counter
                 counts = Counter(_prov(f) for f in fires if _prov(f))
                 if counts:
@@ -529,7 +528,7 @@ with right:
                     st.info("No active fires found.")
                 st.stop()
 
-            # Most hectares burning (per province total)
+            # 2) most hectares by province
             if "most hectares" in text or ("hectares" in text and "most" in text):
                 totals = {}
                 for f in fires:
@@ -543,7 +542,7 @@ with right:
                     st.info("No data.")
                 st.stop()
 
-            # Largest per province
+            # 3) largest per province
             if ("largest" in text or "biggest" in text or "max" in text) and ("per province" in text or "each province" in text):
                 pool = subset if want_provs else fires
                 by_p = {}
@@ -561,6 +560,7 @@ with right:
                         st.write(f"- {p}: {f.get('name')} · {_sizeha(f):,.1f} ha · {f.get('control','—')} · Started {_started_s(f) or '—'}")
                 st.stop()
 
+            # ---------- names only ----------
             if names_only:
                 if not subset:
                     st.info("No matching fires.")
@@ -569,9 +569,11 @@ with right:
                     st.write(", ".join(sorted({_norm(f.get('name')) for f in subset})))
                 st.stop()
 
+            # ---------- top N ----------
             if topN is not None and topN > 0:
                 subset = sorted(subset, key=_sizeha, reverse=True)[:topN]
 
+            # ---------- default render ----------
             if not subset:
                 ongoing = int(raw.get("count_ongoing") or len(fires))
                 st.markdown(f"**Snapshot for {date_label}:** {ongoing} ongoing fire(s).")
@@ -580,14 +582,19 @@ with right:
 
             st.markdown(f"**Matches — {date_label} ({len(subset)}):**")
             for f in subset:
-                extra = f" · {f['_dist_km']:.1f} km" if "_dist_km" in f else ""
-                st.write(f"- {f.get('name')} — {_prov(f)} · {_sizeha(f):,.1f} ha · {f.get('control','—')} · Started {_started_s(f) or '—'}{extra}")
+                # distance shown BEFORE the date (your request)
+                dist = f" · {f['_dist_km']:.1f} km" if "_dist_km" in f else ""
+                st.write(
+                    f"- {f.get('name')} — {_prov(f)} · {_sizeha(f):,.1f} ha · {f.get('control','—')}{dist} · Started {_started_s(f) or '—'}"
+                )
 
             total = sum(_sizeha(f) for f in subset)
+            earliest = min((_date_iso(_started_s(f)) for f in subset if _date_iso(_started_s(f))), default=None)
+            newest   = max((_date_iso(_started_s(f)) for f in subset if _date_iso(_started_s(f))), default=None)
             st.caption(
                 f"Total size: {total:,.1f} ha · "
-                f"Earliest start: {min((_date_iso(_started_s(f)) for f in subset if _date_iso(_started_s(f))), default=None) or '—'} · "
-                f"Newest start: {max((_date_iso(_started_s(f)) for f in subset if _date_iso(_started_s(f))), default=None) or '—'}"
+                f"Earliest start: {earliest or '—'} · "
+                f"Newest start: {newest or '—'}"
             )
 
         except requests.HTTPError as e:
