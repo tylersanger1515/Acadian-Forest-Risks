@@ -400,38 +400,43 @@ with right:
         return fs, True, label
 
     # Q&A renderer (no st.stop — Safety Check always renders)
-    def render_qna():
-        try:
-            raw = st.session_state.get("fires_payload") or post_json(
-                fires_url, {"from": "streamlit"}, shared_secret or None, timeout=timeout_sec
-            )
-            fires = raw.get("fires") or []
-            date_label = raw.get("date", "today")
+def render_qna(q, fires_url, shared_secret, timeout_sec):
+    import re
+    try:
+        raw = st.session_state.get("fires_payload") or post_json(
+            fires_url, {"from": "streamlit"}, shared_secret or None, timeout=timeout_sec
+        )
+        fires = raw.get("fires") or []
+        date_label = raw.get("date", "today")
 
-            text = (q or "").lower().strip()
+        text = (q or "").lower().strip()
 
-            # province filters (support multiple)
-            want = []
-            if re.search(r'\bnb\b|new brunswick', text): want.append("NB")
-            if re.search(r'\bns\b|nova scotia', text):  want.append("NS")
-            if re.search(r'\bnl\b|newfoundland', text): want.append("NL")
-            subset = [f for f in fires if (_prov(f) in want)] if want else list(fires)
+        # --- province filters (support multiple)
+        want = []
+        if re.search(r'\bnb\b|new brunswick', text): want.append("NB")
+        if re.search(r'\bns\b|nova scotia', text):  want.append("NS")
+        if re.search(r'\bnl\b|newfoundland', text): want.append("NL")
+        subset = [f for f in fires if (_prov(f) in want)] if want else list(fires)
 
-          # control filter (synonyms)
-want_ctrl = None
-text_norm = text.lower().replace("-", " ")
+        # --- control filter (synonyms)
+        want_ctrl = None
+        text_norm = text.replace("-", " ")
+        if re.search(r"\bout of control\b|\booc\b", text_norm):
+            want_ctrl = "out of control"
+        elif re.search(r"\bbeing held\b|\bbh\b|\bheld\b", text_norm):
+            want_ctrl = "being held"
+        elif re.search(r"\bunder control\b|\buc\b|\bcontained\b|\bcontrolled\b", text_norm):
+            want_ctrl = "under control"
+        if want_ctrl:
+            subset = [f for f in subset if want_ctrl in _ctrl_text(f)]
 
-if re.search(r"\bout of control\b|\booc\b|\buncontrolled\b|\bout of cntrol\b", text_norm):
-    want_ctrl = "out of control"
-elif re.search(r"\bbeing held\b|\bbh\b|\bheld\b|\bon hold\b", text_norm):
-    want_ctrl = "being held"
-elif re.search(r"\bunder control\b|\buc\b|\bin control\b|\bcontained\b|\bcontrolled\b", text_norm):
-    want_ctrl = "under control"
+        # ---- your remaining Q&A logic continues here ----
+        # (size filters, distance/closest, top-N, recency windows, growth, generic list, etc.)
+        # Make sure you render with st.write/st.markdown like before.
 
-if want_ctrl:
-    subset = [f for f in subset if want_ctrl in _ctrl_text(f)]
-
-
+    except Exception as e:
+        st.warning(f"Couldn’t answer that right now ({e}).")
+        return
 
             # size range
             rng = parse_size_range(text)
