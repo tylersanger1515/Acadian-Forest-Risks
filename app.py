@@ -470,7 +470,7 @@ with right:
                         st.write(f"- {p}: {c}")
                 else:
                     st.info("No active fires found.")
-                return
+                st.stop()
 
             if "most hectares" in text or ("hectares" in text and "most" in text):
                 totals = {}
@@ -483,7 +483,7 @@ with right:
                     st.caption(", ".join(f"{p}: {v:,.1f} ha" for p,v in sorted(totals.items(), key=lambda x: x[1], reverse=True)))
                 else:
                     st.info("No data.")
-                return
+                st.stop()
 
             if names_only:
                 if not subset:
@@ -491,7 +491,7 @@ with right:
                 else:
                     st.markdown("**Matching fire names:**")
                     st.write(", ".join(sorted(set(norm(f.get('name')) for f in subset))))
-                return
+                st.stop()
 
             # ---------- default response ----------
             if not subset:
