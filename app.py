@@ -203,7 +203,7 @@ with t1:
     with right:
         st.markdown("#### Ask about today’s fires")
 
-       # example dropdown (5 unique)
+# example dropdown (5 unique)
 examples = [
     "which fires are out of control?",
     "top 4 largest in NB",
@@ -225,12 +225,11 @@ st.button("Use example", key="use_example", on_click=_copy_example_to_input)
 q = st.text_input(
     "Your question",
     key="q_fires",
-    placeholder=("e.g., fires near Halifax • within 40 km of Truro • closest to Moncton • "
-                 "top 4 largest in NB • totals by province • where is fire 68622 • "
-                 "how far is fire 68622 from Halifax • started last 7 days • older than 3 days"),
+    placeholder=(
+        "e.g., fires near Halifax • within 40 km of Truro • closest to Moncton • "
+        "top 4 largest in NB • totals by province • where is fire 68622 • "
+        "how far is fire 68622 from Halifax • started last 7 days • older than 3 days"
 )
-            key="q_fires",
-        )
 
         ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
 
