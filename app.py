@@ -262,11 +262,7 @@ with t1:
                 )
                 html = data.get("summary_html")
                 if isinstance(html, str) and html.strip():
-                    # cache & rerun so we render in one place below
-                    ss["fires_payload"] = data
-                    ss["fires_html"] = html
-                    st.success("Received response from n8n")
-                    st.rerun()
+                    components.html(html, height=820, scrolling=True)
                 else:
                     st.write(
                         data.get("summary") or data.get("summary_text") or "(No summary returned)"
@@ -280,7 +276,7 @@ with t1:
                 st.error(f"Failed: {e}")
 
         if ss.get("fires_html"):
-            components.html(ss["fires_html"], height=1200, scrolling=True)
+            components.html(ss["fires_html"], height=820, scrolling=True)
 
     # ---------------- RIGHT: Q&A ----------------
     with right:
@@ -301,15 +297,6 @@ with t1:
 
         def _started_s(f):
             return (str(f.get("started") or "")[:10]).strip()
-        def _status_to_color(ctrl: str | None):
-            s = (ctrl or "").lower()
-            if "out" in s:
-                return [220, 38, 38]  # red
-            if "held" in s:
-                return [234, 179, 8]  # yellow
-            if "under" in s:
-                return [16, 185, 129]  # green
-            return [107, 114, 128]  # gray
 
         def _date_iso(s):
             try:
@@ -582,25 +569,330 @@ with t1:
                     st.markdown(fmt_fire_line(f, show_km=True))
                 # quick map
                 view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=7)
-                plot_data = [
-                    {
-                        "lat": f.get("lat"),
-                        "lon": f.get("lon"),
-                        "color": _status_to_color(f.get("control")),
-                    }
-                    for f in cands[:200]
-                ]
                 layer = pdk.Layer(
                     "ScatterplotLayer",
-                    data=plot_data,
+                    data=[{"lat": f.get("lat"), "lon": f.get("lon")} for f in cands[:200]],
                     get_position=["lon", "lat"],
-                    get_fill_color="color",
-                    get_radius=1500,
+                    get_radius=1200,
                     radius_min_pixels=4,
-                    radius_max_pixels=32,
+                    radius_max_pixels=30,
                 )
-                st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view), use_container_width=True)
-                st.caption("Legend: 🔴 Out of Control · 🟡 Being Held · 🟢 Under Control")
+                st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view))
+                return
+
+            # how far is fire <id> from <place>
+            m_howfar = re.search(r"how\s+far\s+is\s+fire\s+(\d+)\s+from\s+(.+)$", ql)
+            if m_howfar:
+                fid, place = m_howfar.group(1), m_howfar.group(2).strip()
+                f = _find_fire_by_id(fires2, fid)
+                if not f:
+                    st.write("Couldn't find that fire.")
+                    return
+                g = _geo_place(place)
+                if not g:
+                    st.write("Couldn't geocode that place.")
+                    return
+                lat0, lon0, label = g
+                try:
+                    dkm = haversine_km(lat0, lon0, float(f.get("lat")), float(f.get("lon")))
+                except Exception:
+                    dkm = None
+                st.write(
+                    f"Fire {fid} is {dkm:.1f} km from {label}." if dkm is not None else "Distance unavailable."
+                )
+                st.markdown(fmt_fire_line(f))
+                return
+
+            # when did fire <id> start
+            m_start = re.search(r"(when\s+did\s+)?fire\s+(\d+)\s+start", ql)
+            if m_start:
+                fid = m_start.group(2)
+                f = _find_fire_by_id(fires2, fid)
+                if not f:
+                    st.write("Couldn't find that fire.")
+                    return
+                st.write(f"Fire {fid} started on {_started_s(f) or 'unknown'}.")
+                st.markdown(fmt_fire_line(f))
+                return
+
+            # Fallback: list fires by province with count
+            by_p = {}
+            for f in fires2:
+                by_p.setdefault(_prov(f) or "—", 0)
+                by_p[_prov(f) or "—"] += 1
+            st.write("Try one of the example questions above. Here's a quick count by province:")
+            st.json(by_p)
+
+        if ask:
+            try:
+                answer_fire_question(q)
+            except requests.HTTPError as e:
+                st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
+            except Exception as e:
+                st.error(f"Failed to answer: {e}")
+        # ---------------- SAFETY CHECK (40 km) ----------------
+        st.divider()
+        st.markdown("#### Safety check (40 km)")
+
+        RADIUS_KM = 40.0
+        loc_in = st.text_input(
+            "Your community or coordinates",
+            placeholder=(
+                "e.g., Halifax NS  |  Moncton  |  44.65,-63.57  • Tip: include your postal code for best accuracy (e.g., B3H 1X1)"
+            ),
+            key="safety_place",
+        )
+        st.caption("Tip: For the most accurate location, include your postal code (e.g., 'B3H 1X1', 'E1C 1A1').")
+
+        colA, colB = st.columns([1, 3])
+        check_btn = colA.button("Check 40 km", key="safety_check", disabled=not bool(fires_url))
+
+        def _parse_latlon(s: str):
+            try:
+                a, b = [t.strip() for t in (s or "").split(",")]
+                return float(a), float(b)
+            except Exception:
+                return None
+
+        if check_btn:
+            try:
+                raw = ss.get("fires_payload") or post_json(
+                    fires_url, {"from": "safety"}, shared_secret or None, timeout=timeout_sec
+                )
+                fires = raw.get("fires") or []
+                if not loc_in.strip():
+                    st.info("Enter a community or coordinates first.")
+                else:
+                    anchor = None
+                    ll = _parse_latlon(loc_in)
+                    if ll:
+                        anchor = (ll[0], ll[1], f"{ll[0]:.4f}, {ll[1]:.4f}")
+                    else:
+                        g = geocode_address(loc_in, opencage_key, google_key)
+                        if g:
+                            anchor = (float(g[0]), float(g[1]), g[2])
+
+                    if not anchor:
+                        st.info("Couldn't locate that place. Try including province or postal code (e.g., 'Halifax B3H 1X1').")
+                    else:
+                        lat0, lon0, place_lbl = anchor
+                        cands = []
+                        for f in fires:
+                            try:
+                                lat, lon = float(f.get("lat")), float(f.get("lon"))
+                            except Exception:
+                                continue
+                            dkm = haversine_km(lat0, lon0, lat, lon)
+                            if dkm is None:
+                                continue
+                            f2 = dict(f)
+                            f2["_dist_km"] = dkm
+                            cands.append(f2)
+
+                        nearby = [f for f in cands if f.get("_dist_km") is not None and f["_dist_km"] <= RADIUS_KM]
+                        nearby.sort(key=lambda x: x.get("_dist_km") if x.get("_dist_km") is not None else 9e9)
+
+                        if nearby:
+                            st.error(f"⚠️ {len(nearby)} active fire(s) within {RADIUS_KM:.0f} km of {place_lbl}")
+                            for f in nearby:
+                                st.write(
+                                    f"- {f.get('name')} — {(f.get('agency') or '').strip().upper()} · "
+                                    f"{float(f.get('size_ha') or 0.0):,.1f} ha · {f.get('control','—')} · "
+                                    f"{f['_dist_km']:.1f} km away · Started {str(f.get('started') or '')[:10] or '—'}"
+                                )
+                            with st.expander("Safety guidance"):
+                                _guidance_block()
+                        else:
+                            st.success(f"No active fires within {RADIUS_KM:.0f} km of {place_lbl}.")
+            except Exception as e:
+                st.error(f"Safety check failed: {e}")
+
+        with st.expander("Safety guidance"):
+            _guidance_block()
+
+# ===== TAB 2: INCIDENT BRIEF =====
+with t2:
+    st.subheader("Incident Briefs")
+
+    if not risk_url:
+        st.warning(
+            "Incident Brief webhook URL is not configured. Set N8N_RISK_URL in **App → Settings → Secrets** to your n8n /webhook/ai/incident-brief URL."
+        )
+    else:
+        ss = st.session_state
+
+        # Persist the radio selection across reruns
+        mode = st.radio("Find by", ["Fire ID", "Location"], horizontal=True, key="brief_mode")
+
+        # ---- Input form (ID or Lat/Lon) ----
+        with st.form("brief_form", clear_on_submit=False):
+            payload = None
+            if mode == "Fire ID":
+                fire_id = st.text_input("Fire ID (e.g., 68622)", key="brief_id")
+                if fire_id.strip():
+                    payload = {"id": fire_id.strip()}
+            else:
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    lat = st.number_input("Lat", value=47.4851, format="%.6f")
+                with c2:
+                    lon = st.number_input("Lon", value=-65.5618, format="%.6f")
+                with c3:
+                    radius = st.number_input("Radius (km)", min_value=1, value=30, step=1)
+                payload = {"lat": float(lat), "lon": float(lon), "radius_km": int(radius)}
+
+            submitted = st.form_submit_button("Get Brief", type="primary")
+
+        # ---- Fetch on submit; cache the result so UI survives reruns ----
+        if submitted and payload:
+            try:
+                data = post_json(risk_url, payload, shared_secret or None, timeout=timeout_sec)
+                incident = (data or {}).get("incident") or {}
+                brief_md = (data or {}).get("brief_md") or "_No brief returned_"
+
+                ss["brief_data"] = data
+                ss["brief_incident"] = incident
+                ss["brief_md"] = brief_md
+            except requests.HTTPError as e:
+                st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
+            except Exception as e:
+                st.error(f"Error fetching brief: {e}")
+        elif submitted and not payload:
+            st.warning("Enter a Fire ID or a location first.")
+
+        # ---- Render from cached values (so other buttons don’t clear the view) ----
+        data = ss.get("brief_data")
+        incident = ss.get("brief_incident", {})
+        brief_md = ss.get("brief_md")
+
+        if data and incident and brief_md:
+            # Top metrics
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Tier", data.get("tier_main", data.get("tier", "—")), data.get("tier_sub", ""))
+            m2.metric("Control", incident.get("control", "—"))
+            try:
+                m3.metric("Size (ha)", int(incident.get("size_ha") or 0))
+            except Exception:
+                m3.metric("Size (ha)", incident.get("size_ha", "—"))
+            m4.metric("Started", incident.get("started", "—"))
+
+            # Brief text
+            st.markdown(brief_md)
+
+            # Map + Nearest places (Google)
+            if "lat" in incident and "lon" in incident:
+                st.markdown("**Map**")
+                view = pdk.ViewState(
+                    latitude=float(incident["lat"]),
+                    longitude=float(incident["lon"]),
+                    zoom=8,
+                    pitch=0,
+                )
+                layer = pdk.Layer(
+                    "ScatterplotLayer",
+                    data=[{"lat": incident["lat"], "lon": incident["lon"]}],
+                    get_position=["lon", "lat"],
+                    get_radius=1000,
+                    radius_min_pixels=6,
+                    radius_max_pixels=60,
+                    pickable=False,
+                )
+                st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view))
+
+                # --- Nearest places (Google Places) ---
+                def _places_nearby(
+                    lat, lon, radius_m, api_key, types=("locality", "sublocality", "neighborhood")
+                ):
+                    url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+                    out, seen = [], set()
+                    for t in types:
+                        params = {
+                            "location": f"{lat},{lon}",
+                            "radius": int(radius_m),
+                            "type": t,
+                            "key": api_key,
+                        }
+                        r = requests.get(url, params=params, timeout=20)
+                        r.raise_for_status()
+                        for it in (r.json() or {}).get("results", []):
+                            pid = it.get("place_id")
+                            if not pid or pid in seen:
+                                continue
+                            seen.add(pid)
+                            loc = (it.get("geometry") or {}).get("location") or {}
+                            plat, plon = float(loc.get("lat", 0)), float(loc.get("lng", 0))
+                            # haversine (km)
+                            R = 6371.0
+                            p = math.pi / 180.0
+                            dlat = (plat - float(lat)) * p
+                            dlon = (plon - float(lon)) * p
+                            a = (
+                                math.sin(dlat / 2) ** 2
+                                + math.cos(float(lat) * p)
+                                * math.cos(plat * p)
+                                * math.sin(dlon / 2) ** 2
+                            )
+                            dist_km = 2 * R * math.asin(math.sqrt(a))
+                            out.append(
+                                {
+                                    "name": it.get("name") or "(unnamed)",
+                                    "types": it.get("types") or [],
+                                    "lat": plat,
+                                    "lon": plon,
+                                    "distance_km": round(dist_km, 2),
+                                }
+                            )
+                    out.sort(key=lambda x: x["distance_km"])
+                    return out
+
+                st.divider()
+                st.markdown("**Nearest places (Google)**")
+
+                if not google_key:
+                    st.info("Add GOOGLE_GEOCODING_API_KEY in App → Settings → Secrets to enable this.")
+                else:
+                    c1, c2 = st.columns([2, 2])
+                    with c1:
+                        radius_choices = st.multiselect(
+                            "Show closest within (km)",
+                            options=[1, 5, 10, 20, 30, 40, 80],
+                            default=[20, 40],
+                        )
+                    with c2:
+                        type_choices = st.multiselect(
+                            "Place types",
+                            options=[
+                                "locality",
+                                "sublocality",
+                                "neighborhood",
+                                "point_of_interest",
+                                "establishment",
+                            ],
+                            default=["locality", "sublocality", "neighborhood"],
+                        )
+
+                    if st.button("Find nearest places"):
+                        lat_i, lon_i = float(incident["lat"]), float(incident["lon"])
+                        max_r = (max(radius_choices) if radius_choices else 40) * 1000  # meters
+                        places = _places_nearby(
+                            lat_i, lon_i, max_r, google_key, tuple(type_choices)
+                        )
+
+                        if not places:
+                            st.info("No places returned by Google for these settings.")
+                        else:
+                            for R in sorted(radius_choices):
+                                subset = [p for p in places if p["distance_km"] <= float(R)]
+                                st.markdown(f"**≤ {R} km** — {len(subset)} place(s)")
+                                if subset:
+                                    for p in subset[:12]:
+                                        t = ", ".join(p.get("types", [])[:3])
+                                        st.write(
+                                            f"- {p['name']} — {p['distance_km']:.2f} km"
+                                            + (f" · _{t}_" if t else "")
+                                        )
+                                else:
+                                    st.caption("none")
 
             # Quick links / details
             cA, cB = st.columns(2)
