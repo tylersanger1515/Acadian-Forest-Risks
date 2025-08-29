@@ -200,8 +200,8 @@ with t1:
             components.html(ss["fires_html"], height=820, scrolling=True)
 
     # ---------------- RIGHT: Q&A + SAFETY CHECK ----------------
-    with right:
-        st.markdown("#### Ask about today’s fires")
+   with right:
+st.markdown("#### Ask about today’s fires")
 
 # example dropdown (5 unique)
 examples = [
@@ -212,22 +212,21 @@ examples = [
     "when did fire 68622 start?",
 ]
 
-# Let the user pick an example (do NOT write into q_fires here)
 st.selectbox("Examples", options=examples, index=0, key="examples_q")
 
-# Safe callback that copies the selection into the text input
 def _copy_example_to_input():
     st.session_state["q_fires"] = st.session_state.get("examples_q", "")
 
-st.button("Use example", key="use_example", on_click=_copy_example_to_input)
+use_ex = st.button("Use example", key="use_example", on_click=_copy_example_to_input)
 
-# The actual question box (binds to q_fires)
 q = st.text_input(
     "Your question",
     key="q_fires",
-    placeholder="e.g., fires near Halifax • within 40 km of Truro • closest to Moncton • "
-                "top 4 largest in NB • totals by province • where is fire 68622 • "
-                "how far is fire 68622 from Halifax • started last 7 days • older than 3 days",
+    placeholder=(
+        "e.g., fires near Halifax • within 40 km of Truro • closest to Moncton • "
+        "top 4 largest in NB • totals by province • where is fire 68622 • "
+        "how far is fire 68622 from Halifax • started last 7 days • older than 3 days"
+    ),
 )
 
 ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
