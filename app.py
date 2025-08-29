@@ -229,6 +229,7 @@ q = st.text_input(
         "e.g., fires near Halifax • within 40 km of Truro • closest to Moncton • "
         "top 4 largest in NB • totals by province • where is fire 68622 • "
         "how far is fire 68622 from Halifax • started last 7 days • older than 3 days"
+    ),
 )
 
         ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
