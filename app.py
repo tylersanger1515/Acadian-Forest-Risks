@@ -401,7 +401,7 @@ with right:
         return fs, True, label
 
     # ---------- Q&A ----------
-   def render_qna(q_text: str):
+def render_qna(q_text: str):
     try:
         raw = st.session_state.get("fires_payload") or post_json(
             fires_url, {"from": "streamlit"}, shared_secret or None, timeout=timeout_sec
