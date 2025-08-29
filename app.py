@@ -582,14 +582,14 @@ with t1:
                     fs = sorted(fs, key=lambda x: x["_dist_km"])[:k]
                     if not fs: st.info(f"No fires found near {label}."); return
                     title = (
-    f"Closest to {label} — {date_label}"
-    if k == 1
-    else f"Closest {k} to {label} — {date_label}"
-)
-st.markdown(f"**{title}:**")
-for f in fs:
-    st.write(fmt_fire_line(f, show_km=True))
-return
+                        f"Closest to {label} — {date_label}"
+                        if k == 1
+                        else f"Closest {k} to {label} — {date_label}"
+                    )
+                    st.markdown(f"**{title}:**")
+                    for f in fs:
+                        st.write(fmt_fire_line(f, show_km=True))
+                    return
 
                 # list if a filter matched
                 if (d_from or d_to) or want_ctrl or want:
