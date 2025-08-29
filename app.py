@@ -630,6 +630,82 @@ with t1:
                 st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
             except Exception as e:
                 st.error(f"Failed to answer: {e}")
+        # ---------------- SAFETY CHECK (40 km) ----------------
+        st.divider()
+        st.markdown("#### Safety check (40 km)")
+
+        RADIUS_KM = 40.0
+        loc_in = st.text_input(
+            "Your community or coordinates",
+            placeholder=(
+                "e.g., Halifax NS  |  Moncton  |  44.65,-63.57  • Tip: include your postal code for best accuracy (e.g., B3H 1X1)"
+            ),
+            key="safety_place",
+        )
+        st.caption("Tip: For the most accurate location, include your postal code (e.g., 'B3H 1X1', 'E1C 1A1').")
+
+        colA, colB = st.columns([1, 3])
+        check_btn = colA.button("Check 40 km", key="safety_check", disabled=not bool(fires_url))
+
+        def _parse_latlon(s: str):
+            try:
+                a, b = [t.strip() for t in (s or "").split(",")]
+                return float(a), float(b)
+            except Exception:
+                return None
+
+        if check_btn:
+            try:
+                raw = ss.get("fires_payload") or post_json(
+                    fires_url, {"from": "safety"}, shared_secret or None, timeout=timeout_sec
+                )
+                fires = raw.get("fires") or []
+                if not loc_in.strip():
+                    st.info("Enter a community or coordinates first.")
+                else:
+                    anchor = None
+                    ll = _parse_latlon(loc_in)
+                    if ll:
+                        anchor = (ll[0], ll[1], f"{ll[0]:.4f}, {ll[1]:.4f}")
+                    else:
+                        g = geocode_address(loc_in, opencage_key, google_key)
+                        if g:
+                            anchor = (float(g[0]), float(g[1]), g[2])
+
+                    if not anchor:
+                        st.info("Couldn't locate that place. Try including province or postal code (e.g., 'Halifax B3H 1X1').")
+                    else:
+                        lat0, lon0, place_lbl = anchor
+                        cands = []
+                        for f in fires:
+                            try:
+                                lat, lon = float(f.get("lat")), float(f.get("lon"))
+                            except Exception:
+                                continue
+                            dkm = haversine_km(lat0, lon0, lat, lon)
+                            if dkm is None:
+                                continue
+                            f2 = dict(f)
+                            f2["_dist_km"] = dkm
+                            cands.append(f2)
+
+                        nearby = [f for f in cands if f.get("_dist_km") is not None and f["_dist_km"] <= RADIUS_KM]
+                        nearby.sort(key=lambda x: x.get("_dist_km") if x.get("_dist_km") is not None else 9e9)
+
+                        if nearby:
+                            st.error(f"⚠️ {len(nearby)} active fire(s) within {RADIUS_KM:.0f} km of {place_lbl}")
+                            for f in nearby:
+                                st.write(
+                                    f"- {f.get('name')} — {(f.get('agency') or '').strip().upper()} · "
+                                    f"{float(f.get('size_ha') or 0.0):,.1f} ha · {f.get('control','—')} · "
+                                    f"{f['_dist_km']:.1f} km away · Started {str(f.get('started') or '')[:10] or '—'}"
+                                )
+                            with st.expander("Safety guidance"):
+                                _guidance_block()
+                        else:
+                            st.success(f"No active fires within {RADIUS_KM:.0f} km of {place_lbl}.")
+            except Exception as e:
+                st.error(f"Safety check failed: {e}")
 
         with st.expander("Safety guidance"):
             _guidance_block()
