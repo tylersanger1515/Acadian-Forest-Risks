@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional, Tuple, List
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
+import pydeck as pdk
 
 # ---------- CONFIG ----------
 IMG_PATH = "assets/images/fokabs image.jpg"
@@ -165,7 +166,7 @@ def geocode_address(address: str,
         return None
 
 # ---------- TABS ----------
-t1, t2, t3 = st.tabs(["🔥 Active Fires", "🧭 Risk Summary", "🚨 SAFER Fire Alert"])
+t1, t2, t3 = st.tabs(["🔥 Active Fires", "🧾 Incident Brief", "🚨 SAFER Fire Alert"])
 
 # ===== TAB 1: ACTIVE FIRES =====
 with t1:
@@ -699,6 +700,82 @@ with t1:
                 st.error(f"HTTP error: {e.response.status_code} {e.response.text[:300]}")
             except Exception as e:
                 st.error(f"Check failed: {e}")
+
+# ===== TAB 2: INCIDENT BRIEF =====
+with t2:
+    st.subheader("Incident Briefs")
+
+    if not risk_url:
+        st.warning("Incident Brief webhook URL is not configured. Set N8N_RISK_URL in **App → Settings → Secrets** to your n8n /webhook/ai/incident-brief URL.")
+    else:
+        mode = st.radio("Find by", ["Fire ID", "Location"], horizontal=True)
+
+        with st.form("brief_form", clear_on_submit=False):
+            payload = None
+            if mode == "Fire ID":
+                fire_id = st.text_input("Fire ID (e.g., 68622)", key="brief_id")
+                if fire_id.strip():
+                    payload = {"id": fire_id.strip()}
+            else:
+                c1, c2, c3 = st.columns(3)
+                with c1: lat = st.number_input("Lat", value=47.4851, format="%.6f")
+                with c2: lon = st.number_input("Lon", value=-65.5618, format="%.6f")
+                with c3: radius = st.number_input("Radius (km)", min_value=1, value=30, step=1)
+                payload = {"lat": float(lat), "lon": float(lon), "radius_km": int(radius)}
+            submitted = st.form_submit_button("Get Brief", type="primary")
+
+        if submitted and payload:
+            try:
+                data = post_json(risk_url, payload, shared_secret or None, timeout=timeout_sec)
+                incident = (data or {}).get("incident") or {}
+                brief_md = (data or {}).get("brief_md") or "_No brief returned_"
+
+                # --- Top metrics
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Tier", data.get("tier", "—"))
+                m2.metric("Control", incident.get("control", "—"))
+                try:
+                    m3.metric("Size (ha)", int(incident.get("size_ha") or 0))
+                except Exception:
+                    m3.metric("Size (ha)", incident.get("size_ha", "—"))
+                m4.metric("Started", incident.get("started", "—"))
+
+                # --- Brief text
+                st.markdown(brief_md)
+
+                # --- Small map
+                if "lat" in incident and "lon" in incident:
+                    st.markdown("**Map**")
+                    view = pdk.ViewState(
+                        latitude=float(incident["lat"]),
+                        longitude=float(incident["lon"]),
+                        zoom=8, pitch=0
+                    )
+                    layer = pdk.Layer(
+                        "ScatterplotLayer",
+                        data=[{"lat": incident["lat"], "lon": incident["lon"]}],
+                        get_position=["lon", "lat"],
+                        get_radius=1000,
+                        radius_min_pixels=6,
+                        radius_max_pixels=60,
+                        pickable=False,
+                    )
+                    st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view))
+
+                # --- Quick links / details
+                c1, c2 = st.columns(2)
+                if (data or {}).get("map_link"):
+                    c1.link_button("Open in Google Maps", data["map_link"])
+                with c2:
+                    with st.popover("Details"):
+                        st.json(incident)
+
+            except requests.HTTPError as e:
+                st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
+            except Exception as e:
+                st.error(f"Error fetching brief: {e}")
+        elif submitted and not payload:
+            st.warning("Enter a Fire ID or a location first.")
 
 # ===== TAB 3: SAFER Fire Alert =====
 with t3:
