@@ -732,7 +732,7 @@ with t2:
 
                 # --- Top metrics
                 m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Tier", data.get("tier", "—"))
+                m1.metric("Tier", data.get("tier_main", data.get("tier", "—")), data.get("tier_sub", ""))
                 m2.metric("Control", incident.get("control", "—"))
                 try:
                     m3.metric("Size (ha)", int(incident.get("size_ha") or 0))
