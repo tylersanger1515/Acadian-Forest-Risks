@@ -616,10 +616,3 @@ def _unsubscribe():
 if 'toggle_clicked' in globals() and toggle_clicked and subscribe_url:
     if st.session_state.get("alerts_active"): _unsubscribe()
     else: _subscribe()
-
-# ---------- FOOTER ----------
-st.markdown("""
----
-**Notes**
-- Add your keys in **App → Settings → Secrets**. We’ll use Google when available and fall back to OpenCage (bounded by province) for faster, locality-correct results.
-""")
