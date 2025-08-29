@@ -200,36 +200,33 @@ with t1:
             components.html(ss["fires_html"], height=820, scrolling=True)
 
     # ---------------- RIGHT: Q&A + SAFETY CHECK ----------------
-   with right:
-st.markdown("#### Ask about today’s fires")
+    with right:
+        st.markdown("#### Ask about today’s fires")
 
-# example dropdown (5 unique)
-examples = [
-    "which fires are out of control?",
-    "top 4 largest in NB",
-    "fires within 40 km of Halifax",
-    "what place is closest to fire 68586?",
-    "when did fire 68622 start?",
-]
+        # ----- Examples & inputs (kept inside right column) -----
+        examples = [
+            "which fires are out of control?",
+            "top 4 largest in NB",
+            "fires within 40 km of Halifax",
+            "what place is closest to fire 68586?",
+            "when did fire 68622 start?",
+        ]
+        st.selectbox("Examples", options=examples, index=0, key="examples_q")
 
-st.selectbox("Examples", options=examples, index=0, key="examples_q")
+        def _copy_example_to_input():
+            st.session_state["q_fires"] = st.session_state.get("examples_q", "")
 
-def _copy_example_to_input():
-    st.session_state["q_fires"] = st.session_state.get("examples_q", "")
+        use_ex = st.button("Use example", key="use_example", on_click=_copy_example_to_input)
 
-use_ex = st.button("Use example", key="use_example", on_click=_copy_example_to_input)
+        q = st.text_input(
+            "Your question",
+            key="q_fires",
+            placeholder=("e.g., fires near Halifax • within 40 km of Truro • closest to Moncton • "
+                         "top 4 largest in NB • totals by province • where is fire 68622 • "
+                         "how far is fire 68622 from Halifax • started last 7 days • older than 3 days"),
+        )
 
-q = st.text_input(
-    "Your question",
-    key="q_fires",
-    placeholder=(
-        "e.g., fires near Halifax • within 40 km of Truro • closest to Moncton • "
-        "top 4 largest in NB • totals by province • where is fire 68622 • "
-        "how far is fire 68622 from Halifax • started last 7 days • older than 3 days"
-    ),
-)
-
-ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
+        ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
 
         # ---------- small helpers ----------
         def _prov(f): return (f.get("agency") or "").strip().upper()
@@ -249,6 +246,8 @@ ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
             except: return None
 
         def haversine_km(lat1, lon1, lat2, lon2):
+            if None in (lat1, lon1, lat2, lon2):
+                return None
             R = 6371.0; p = math.pi/180.0
             dlat = (lat2-lat1)*p; dlon = (lon2-lon1)*p
             a = math.sin(dlat/2)**2 + math.cos(lat1*p)*math.cos(lat2*p)*math.sin(dlon/2)**2
@@ -329,7 +328,8 @@ ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
                 return fs, False, where
             lat0, lon0, label = g
             for f in fs:
-                d = haversine_km(lat0, lon0, _lat(f), _lon(f))
+                lat, lon = _lat(f), _lon(f)
+                d = haversine_km(lat0, lon0, lat, lon) if (lat is not None and lon is not None) else None
                 f["_dist_km"] = d
             return fs, True, label
 
@@ -357,6 +357,8 @@ ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
                 ll = _geocode_city(city)
                 if not ll: continue
                 d = haversine_km(lat, lon, ll[0], ll[1])
+                if d is None: 
+                    continue
                 if not best or d < best[1]:
                     best = (city, d)
             return best
@@ -503,12 +505,14 @@ ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
                 if any(k in text for k in ["where is","what location","location of","loc of","coords of"]) and m_id:
                     fid = m_id.group(1)
                     f = next((x for x in fires if str(x.get("name")) == fid), None)
-                    if not f: st.info(f"Fire {fid} not found.")
+                    if not f: 
+                        st.info(f"Fire {fid} not found.")
                     else:
                         lat, lon = _lat(f), _lon(f)
+                        coords = f"{lat:.4f}, {lon:.4f}" if (lat is not None and lon is not None) else "—"
                         st.markdown(f"**Location for fire {fid} — {date_label}:**")
                         st.write(f"- {_prov(f)} · {_sizeha(f):,.1f} ha · {f.get('control','—')} · "
-                                 f"coords: {lat:.4f}, {lon:.4f} · Started {_started_s(f) or '—'}")
+                                 f"coords: {coords} · Started {_started_s(f) or '—'}")
                     return
 
                 # when did fire <id> start? (hyphen/space tolerant)
@@ -528,10 +532,14 @@ ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
                     fid, place = m.group(1), m.group(2).strip()
                     f = next((x for x in fires if str(x.get("name")) == fid), None)
                     if not f: st.info(f"Fire {fid} not found."); return
+                    if _lat(f) is None or _lon(f) is None:
+                        st.info(f"Coordinates for fire {fid} are not available."); return
                     g = geocode_place(place)
                     if not g: st.info(f"Couldn’t locate “{place}”. Try including province or postal code."); return
                     lat0, lon0, lbl = g
                     d = haversine_km(lat0, lon0, _lat(f), _lon(f))
+                    if d is None:
+                        st.info("Couldn’t compute distance for that query."); return
                     st.markdown(f"**Distance — fire {fid} to {lbl}: {d:.1f} km**"); st.write(fmt_fire_line(f)); return
 
                 # nearest place to fire <id> (using built-in city list)
@@ -613,10 +621,11 @@ ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
             except Exception as e:
                 st.warning(f"Couldn’t answer that right now ({e}).")
 
+        # trigger Q&A
         if ask or use_ex:
             render_qna(q)
 
-        # ---------------- SAFETY CHECK (single instance) ----------------
+        # ---------------- SAFETY CHECK (kept in right column) ----------------
         st.divider()
         st.markdown("#### Safety check (40 km)")
 
@@ -673,8 +682,8 @@ ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
                         cands = [f for f in fires if _lat(f) is not None and _lon(f) is not None]
                         for f in cands:
                             f["_dist_km"] = haversine_km(lat0, lon0, _lat(f), _lon(f))
-                        nearby = [f for f in cands if f["_dist_km"] <= RADIUS_KM]
-                        nearby.sort(key=lambda x: x["_dist_km"])
+                        nearby = [f for f in cands if (f["_dist_km"] is not None and f["_dist_km"] <= RADIUS_KM)]
+                        nearby.sort(key=lambda x: x["_dist_km"] if x["_dist_km"] is not None else 9e9)
 
                         if nearby:
                             st.error(f"⚠️ {len(nearby)} active fire(s) within {RADIUS_KM:.0f} km of {place_lbl}")
