@@ -271,385 +271,31 @@ with t1:
 
         # size phrases
         def parse_size_range(text):
-            t = (text or "").lower()
-            nums = [float(x) for x in re.findall(r'(\d+(?:\.\d+)?)\s*ha?', t)]
-            if "between" in t and "and" in t and len(nums) >= 2:
-                a, b = sorted(nums[:2]); return ("between", a, b)
-            if any(w in t for w in ["over","more than",">=","at least","minimum","greater than","bigger than","larger than",">"]):
-                return ("min", nums[0]) if nums else None
-            if any(w in t for w in ["under","less than","<=","at most","maximum","below","smaller than","lesser than","<"]):
-                return ("max", nums[0]) if nums else None
-            return None
+    t = (text or "").lower()
+    # capture numbers with or without unit; allow "100ha", "100 ha", "100"
+    nums = [float(x) for x in re.findall(r'(\d+(?:\.\d+)?)\s*(?:ha)?', t)]
+    # Normalize phrasing
+    if "between" in t and "and" in t and len(nums) >= 2:
+        a, b = sorted(nums[:2])
+        return ("between", a, b)
+    if any(w in t for w in [
+        "over", "more than", ">", ">=", "at least", "minimum", "greater than", "bigger than", "larger than", "above"
+    ]):
+        return ("min", nums[0]) if nums else None
+    if any(w in t for w in [
+        "under", "less than", "<", "<=", "at most", "maximum", "below", "smaller than", "lesser than"
+    ]):
+        return ("max", nums[0]) if nums else None
+    # patterns like ">= 50ha", "<=100"
+    m = re.search(r'([<>]=?)\s*(\d+(?:\.\d+)?)\s*(?:ha)?', t)
+    if m:
+        op, val = m.group(1), float(m.group(2))
+        if op.startswith(">"):
+            return ("min", val)
+        else:
+            return ("max", val)
+    return None
 
-        # time window
-        def parse_days_window(text: str):
-            s2 = _num_from_words((text or "").lower())
-            end = _date_iso(st.session_state.get("fires_payload", {}).get("date")) or dt.date.today()
-            m = re.search(r'(?:last|past)\s+(\d+)\s+day', s2)
-            if m: d = int(m.group(1));  return (end - dt.timedelta(days=d), end, "past")
-            m = re.search(r'(?:last|past)\s+(\d+)\s+week', s2)
-            if m: w = int(m.group(1));  return (end - dt.timedelta(days=7*w), end, "past")
-            m = re.search(r'(?:older\s+than|at\s+least|>=)\s+(\d+)\s+day(?:s)?(?:\s+ago)?', s2)
-            if m: d = int(m.group(1));  return (None, end - dt.timedelta(days=d), "older")
-            m = re.search(r'(\d+)\s+day(?:s)?\s+ago', s2)
-            if m: d = int(m.group(1));  return (None, end - dt.timedelta(days=d), "older")
-            if "last week" in s2 or "past week" in s2: return (end - dt.timedelta(days=7), end, "past")
-            if "last 7 days" in s2: return (end - dt.timedelta(days=7), end, "past")
-            return (None, None, "")
-
-        # GEO intent parsing
-        def parse_geo(text):
-            t = (text or "").lower().strip()
-            m = re.search(r'within\s+(\d+(?:\.\d+)?)\s*km\s+(?:of|from)\s+(.+)', t)
-            if m: return ("within", float(m.group(1)), m.group(2).strip())
-            m = re.search(r'(\d+(?:\.\d+)?)\s*km\s+(?:near|around|about)\s+(.+)', t)
-            if m: return ("within", float(m.group(1)), m.group(2).strip())
-            m = re.search(r'(?:any\s+fires\s+)?(\d+(?:\.\d+)?)\s*km\s+(?:away\s+from|from|of)\s+(.+)', t)
-            if m: return ("within", float(m.group(1)), m.group(2).strip())
-            m = re.search(r'(?:top\s+(\d+)\s+)?(?:closest|nearest)(?:\s+fire)?\s+(?:to|near)\s+(.+)', t)
-            if m: return ("closest", int(m.group(1) or 1), m.group(2).strip())
-            m = re.search(r'\b(?:near|nearby|close to)\s+(.+)', t)
-            if m: return ("within", 40.0, m.group(1).strip())
-            return (None, None, None)
-
-        def geocode_place(name: str) -> Optional[Tuple[float, float, str]]:
-            qtext = (name or "").strip()
-            if not qtext: return None
-            qtext = re.sub(r'\bwithin\s+\d+(?:\.\d+)?\s*km\b', '', qtext, flags=re.I).strip(",.;: ")
-            try:
-                g = geocode_address(qtext, opencage_key, google_key)
-                if g: return float(g[0]), float(g[1]), g[2]
-            except Exception:
-                pass
-            return None
-
-        def attach_distances(fs, where):
-            g = geocode_place(where)
-            if not g:
-                return fs, False, where
-            lat0, lon0, label = g
-            for f in fs:
-                lat, lon = _lat(f), _lon(f)
-                d = haversine_km(lat0, lon0, lat, lon) if (lat is not None and lon is not None) else None
-                f["_dist_km"] = d
-            return fs, True, label
-
-        def _digits(s: str) -> str:
-            return re.sub(r"\D", "", s or "")
-
-        # geocode & cache cities for “nearest city to fire <id>”
-        def _geocode_city(label: str) -> Optional[Tuple[float, float]]:
-            cache = ss["city_cache"]
-            if label in cache: return cache[label]
-            g = geocode_place(label)
-            if not g: return None
-            cache[label] = (g[0], g[1])
-            return cache[label]
-
-        def _nearest_place_to_fire(fid: str) -> Optional[Tuple[str, float]]:
-            raw = ss.get("fires_payload") or {}
-            fires = raw.get("fires") or []
-            f = next((x for x in fires if str(x.get("name")) == fid), None)
-            if not f or _lat(f) is None or _lon(f) is None:
-                return None
-            lat, lon = _lat(f), _lon(f)
-            best = None
-            for city in DEFAULT_CITIES:
-                ll = _geocode_city(city)
-                if not ll: continue
-                d = haversine_km(lat, lon, ll[0], ll[1])
-                if d is None: 
-                    continue
-                if not best or d < best[1]:
-                    best = (city, d)
-            return best
-
-        # ---------- Q&A engine ----------
-        def render_qna(q_text: str):
-            try:
-                raw = ss.get("fires_payload") or post_json(
-                    fires_url, {"from": "streamlit"}, shared_secret or None, timeout=timeout_sec
-                )
-                ss["fires_payload"] = raw
-                fires = raw.get("fires") or []
-                date_label = raw.get("date", "today")
-
-                text = (q_text or "").lower().strip()
-
-                # province filters (support multiple)
-                want = []
-                if re.search(r'\bnb\b|new brunswick', text): want.append("NB")
-                if re.search(r'\bns\b|nova scotia', text):  want.append("NS")
-                if re.search(r'\bnl\b|newfoundland|labrador', text): want.append("NL")
-                subset = [f for f in fires if (_prov(f) in want)] if want else list(fires)
-
-                # control synonyms (OC / UC / BH)
-                want_ctrl = None
-                tnorm = text.replace("-", " ")
-                if re.search(r"\bout of control\b|\booc\b|out of control", tnorm):
-                    want_ctrl = "out of control"
-                elif re.search(r"\bbeing held\b|\bbh\b|\bheld\b", tnorm):
-                    want_ctrl = "being held"
-                elif re.search(r"\bunder control\b|\buc\b|\bcontrolled\b|\bcontained\b", tnorm):
-                    want_ctrl = "under control"
-                if want_ctrl:
-                    subset = [f for f in subset if want_ctrl in _ctrl_text(f)]
-
-                # size range
-                rng = parse_size_range(text)
-                if rng:
-                    if rng[0] == "between":
-                        a, b = rng[1], rng[2]; subset = [f for f in subset if a <= _sizeha(f) <= b]
-                    elif rng[0] == "min":
-                        subset = [f for f in subset if _sizeha(f) >= rng[1]]
-                    elif rng[0] == "max":
-                        subset = [f for f in subset if _sizeha(f) <= rng[1]]
-
-                # time window
-                d_from, d_to, _tag = parse_days_window(text)
-                if d_from or d_to:
-                    def in_window(f):
-                        d = _date_iso(_started_s(f))
-                        if not d: return False
-                        if d_from and d < d_from: return False
-                        if d_to   and d > d_to:   return False
-                        return True
-                    subset = [f for f in subset if in_window(f)]
-
-                # new today
-                if any(w in text for w in ["new fire", "new fires", "started today", "today only"]):
-                    today = _date_iso(date_label) or dt.date.today()
-                    sf = [f for f in fires if (_date_iso(_started_s(f)) == today)]
-                    if not sf:
-                        st.info(f"No new fires for {date_label}.")
-                    else:
-                        st.markdown(f"**New fires — {date_label} ({len(sf)}):**")
-                        for f in sf: st.write(fmt_fire_line(f))
-                    return
-
-                # totals by province (hectares)
-                if (any(w in text for w in ["hectare","hectares","ha","burnt","burned"])
-                    and ("by province" in text or "per province" in text or ("province" in text and "total" in text))):
-                    totals = {}
-                    for f in fires:
-                        p = _prov(f)
-                        if p: totals[p] = totals.get(p, 0.0) + _sizeha(f)
-                    if totals:
-                        st.markdown(f"**Total hectares by province — {date_label}:**")
-                        for p, v in sorted(totals.items()):
-                            st.write(f"- {p}: {v:,.1f} ha")
-                    else:
-                        st.info("No data.")
-                    return
-
-                # overall total hectares
-                if (any(w in text for w in ["hectare","hectares","ha"]) and "total" in text and "province" not in text):
-                    tot = sum(_sizeha(f) for f in fires)
-                    st.markdown(f"**Total area across all active fires — {date_label}: {tot:,.1f} ha**")
-                    return
-
-                # counts by province
-                if (("how many" in text or "count" in text or "number of" in text or "total fires" in text)
-                    and ("by province" in text or "per province" in text or "each province" in text)):
-                    from collections import Counter
-                    counts = Counter(_prov(f) for f in fires if _prov(f))
-                    if counts:
-                        st.markdown(f"**Active fires by province — {date_label}:**")
-                        for p, c in counts.most_common():
-                            st.write(f"- {p}: {c}")
-                    else:
-                        st.info("No active fires found.")
-                    return
-
-                # province with most
-                if "most" in text and "province" in text and "fire" in text:
-                    from collections import Counter
-                    counts = Counter(_prov(f) for f in fires if _prov(f))
-                    if counts:
-                        p, c = counts.most_common(1)[0]
-                        st.markdown(f"**{p}** has the most active fires today ({c}).")
-                    else:
-                        st.info("No active fires found.")
-                    return
-
-                # largest per province
-                if "largest" in text and ("per province" in text or "by province" in text):
-                    best = {}
-                    for f in fires:
-                        p = _prov(f)
-                        if not p: continue
-                        if p not in best or _sizeha(f) > _sizeha(best[p]): best[p] = f
-                    if best:
-                        st.markdown(f"**Largest fire per province — {date_label}:**")
-                        for p in ("NB","NL","NS"):
-                            if p in best: st.write(fmt_fire_line(best[p]))
-                    else:
-                        st.info("No data.")
-                    return
-
-                # top N largest (current subset)
-                if "top" in text and "largest" in text:
-                    m = re.search(r'top\s+(\d+)', text); k = int(m.group(1)) if m else 5
-                    biggest = sorted(subset, key=_sizeha, reverse=True)[:k]
-                    st.markdown(f"**Top {k} largest fires — {date_label}:**" if biggest else "No fires found.")
-                    for f in biggest: st.write(fmt_fire_line(f))
-                    return
-
-                # largest in subset (e.g., “largest in NB”)
-                if "largest" in text and (" in " in text or want):
-                    if not subset: st.info("No matching fires."); return
-                    f = max(subset, key=_sizeha)
-                    st.markdown(f"**Largest fire — {date_label}:**"); st.write(fmt_fire_line(f)); return
-
-                # where is / location of fire <id>
-                m_id = re.search(r'\b(\d{3,6})\b', text)
-                if any(k in text for k in ["where is","what location","location of","loc of","coords of"]) and m_id:
-                    fid = m_id.group(1)
-                    f = next((x for x in fires if str(x.get("name")) == fid), None)
-                    if not f: 
-                        st.info(f"Fire {fid} not found.")
-                    else:
-                        lat, lon = _lat(f), _lon(f)
-                        coords = f"{lat:.4f}, {lon:.4f}" if (lat is not None and lon is not None) else "—"
-                        st.markdown(f"**Location for fire {fid} — {date_label}:**")
-                        st.write(f"- {_prov(f)} · {_sizeha(f):,.1f} ha · {f.get('control','—')} · "
-                                 f"coords: {coords} · Started {_started_s(f) or '—'}")
-                    return
-
-                # when did fire <id> start? (hyphen/space tolerant)
-                m_start = re.search(r'(?:when\s+did\s*(?:fire\s*)?([0-9\-\s]+)\s*start|start\s*date\s*for\s*([0-9\-\s]+))', text)
-                if m_start:
-                    fid = _digits(m_start.group(1) or m_start.group(2))
-                    f = next((x for x in fires if str(x.get("name")) == fid), None)
-                    if not f: st.info(f"Fire {fid} not found.")
-                    else:
-                        st.markdown(f"**Start date for fire {fid}: {_started_s(f) or '—'}**")
-                        st.write(fmt_fire_line(f))
-                    return
-
-                # how far is fire <id> from <place>
-                m = re.search(r'how\s+far\s+(?:is\s+)?(?:fire\s+)?(\d{3,6})\s+(?:from|to)\s+(.+)', text)
-                if m:
-                    fid, place = m.group(1), m.group(2).strip()
-                    f = next((x for x in fires if str(x.get("name")) == fid), None)
-                    if not f: st.info(f"Fire {fid} not found."); return
-                    if _lat(f) is None or _lon(f) is None:
-                        st.info(f"Coordinates for fire {fid} are not available."); return
-                    g = geocode_place(place)
-                    if not g: st.info(f"Couldn’t locate “{place}”. Try including province or postal code."); return
-                    lat0, lon0, lbl = g
-                    d = haversine_km(lat0, lon0, _lat(f), _lon(f))
-                    if d is None:
-                        st.info("Couldn’t compute distance for that query."); return
-                    st.markdown(f"**Distance — fire {fid} to {lbl}: {d:.1f} km**"); st.write(fmt_fire_line(f)); return
-
-                # nearest place to fire <id> (using built-in city list)
-                m = re.search(r'(?:nearest|closest)\s+(?:place|city)\s+(?:to|for)\s+(?:fire\s*)?(\d{3,6})', text)
-                if m:
-                    fid = m.group(1)
-                    best = _nearest_place_to_fire(fid)
-                    if not best: st.info(f"Fire {fid} not found or no reference places were geocoded yet.")
-                    else:
-                        st.markdown(f"**Closest place to fire {fid}: {best[0]} — {best[1]:.1f} km**")
-                    return
-
-                # “still 0.1 ha after N days”
-                if "0.1 ha" in text and ("after" in text or "older than" in text or "later" in text or "still" in text):
-                    m = re.search(r'after\s+(\d+)\s+day', _num_from_words(text))
-                    n = int(m.group(1)) if m else 2
-                    cutoff = dt.date.today() - dt.timedelta(days=n)
-                    sf = [f for f in subset if abs(_sizeha(f) - 0.1) < 1e-6 and (_date_iso(_started_s(f)) or dt.date(1900,1,1)) <= cutoff]
-                    if not sf:
-                        st.info(f"No fires still 0.1 ha after {n} days.")
-                    else:
-                        st.markdown(f"**Matches — {date_label} ({len(sf)}):**")
-                        for f in sf: st.write(fmt_fire_line(f))
-                        st.caption(
-                            f"Total size: {sum(_sizeha(x) for x in sf):,.1f} ha · "
-                            f"Earliest start: {min((_date_iso(_started_s(x)) for x in sf if _date_iso(_started_s(x))), default='—')} · "
-                            f"Newest start: {max((_date_iso(_started_s(x)) for x in sf if _date_iso(_started_s(x))), default='—')}"
-                        )
-                    return
-
-                # GEO: within / closest
-                mode, amount, place = parse_geo(text)
-                if mode == "within" and place:
-                    fs, show_km, label = attach_distances(subset[:], place)
-                    if not show_km:
-                        st.info(f"Couldn’t locate “{place}”. Try including the province or a postal code.")
-                        return
-                    radius = float(amount or 40)
-                    fs = [f for f in fs if f.get("_dist_km") is not None and f["_dist_km"] <= radius]
-                    if not fs:
-                        st.info(f"No active fires within {radius:.0f} km of {label}."); return
-                    st.markdown(f"**Matches within {radius:.0f} km of {label} — {date_label} ({len(fs)}):**")
-                    for f in sorted(fs, key=lambda x: x.get("_dist_km") or 9e9): st.write(fmt_fire_line(f, show_km=True))
-                    return
-
-                if mode == "closest" and place:
-                    fs, show_km, label = attach_distances(subset[:], place)
-                    if not show_km:
-                        st.info(f"Couldn’t locate “{place}”. Try “closest to Truro, NS”."); return
-                    k = int(amount or 1)
-                    fs = [f for f in fs if f.get("_dist_km") is not None]
-                    fs = sorted(fs, key=lambda x: x["_dist_km"])[:k]
-                    if not fs: st.info(f"No fires found near {label}."); return
-                    title = (
-                        f"Closest to {label} — {date_label}"
-                        if k == 1
-                        else f"Closest {k} to {label} — {date_label}"
-                    )
-                    st.markdown(f"**{title}:**")
-                    for f in fs:
-                        st.write(fmt_fire_line(f, show_km=True))
-                    return
-
-                # list if a filter matched
-                if (d_from or d_to) or want_ctrl or want:
-                    if not subset: st.info("No matching fires.")
-                    else:
-                        st.markdown(f"**Matches — {date_label} ({len(subset)}):**")
-                        for f in subset: st.write(fmt_fire_line(f))
-                    return
-
-                # fallback snapshot
-                ongoing = int(raw.get("count_ongoing") or len(fires))
-                st.markdown(f"**Snapshot for {date_label}:** {ongoing} ongoing fire(s).")
-                st.write("Try: *fires over 20 ha in NB* · *closest to Truro* · *within 40 km of Halifax* · "
-                         "*top 5 largest in NS* · *started last 7 days* · *older than 3 days*")
-            except requests.HTTPError as e:
-                st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
-            except Exception as e:
-                st.warning(f"Couldn’t answer that right now ({e}).")
-
-        # trigger Q&A
-        if ask or use_ex:
-            render_qna(q)
-
-        # ---------------- SAFETY CHECK (kept in right column) ----------------
-        st.divider()
-        st.markdown("#### Safety check (40 km)")
-
-        RADIUS_KM = 40.0
-        loc_in = st.text_input(
-            "Your community or coordinates",
-            placeholder="e.g., Halifax NS  |  Moncton  |  44.65,-63.57  • Tip: include your postal code for best accuracy (e.g., B3H 1X1)",
-            key="safety_place",
-        )
-        st.caption("Tip: For the most accurate location, include your postal code (e.g., 'B3H 1X1', 'E1C 1A1').")
-
-        colA, colB = st.columns([1, 3])
-        check_btn = colA.button("Check 40 km", key="safety_check", disabled=not bool(fires_url))
-
-        def _parse_latlon(s: str):
-            try:
-                a, b = [t.strip() for t in (s or "").split(",")]
-                return float(a), float(b)
-            except Exception:
-                return None
-
-        def _guidance_block():
-            st.markdown("""
 **If a wildfire is near you (≤40 km):**
 - **Call 911** if you see fire/smoke threatening people or property, or if told to evacuate.
 - **Contact your provincial forestry / wildfire line** to report details if safe.
@@ -708,8 +354,12 @@ with t2:
     if not risk_url:
         st.warning("Incident Brief webhook URL is not configured. Set N8N_RISK_URL in **App → Settings → Secrets** to your n8n /webhook/ai/incident-brief URL.")
     else:
-        mode = st.radio("Find by", ["Fire ID", "Location"], horizontal=True)
+        ss = st.session_state
 
+        # Persist the radio selection across reruns
+        mode = st.radio("Find by", ["Fire ID", "Location"], horizontal=True, key="brief_mode")
+
+        # ---- Input form (ID or Lat/Lon) ----
         with st.form("brief_form", clear_on_submit=False):
             payload = None
             if mode == "Fire ID":
@@ -718,134 +368,145 @@ with t2:
                     payload = {"id": fire_id.strip()}
             else:
                 c1, c2, c3 = st.columns(3)
-                with c1: lat = st.number_input("Lat", value=47.4851, format="%.6f")
-                with c2: lon = st.number_input("Lon", value=-65.5618, format="%.6f")
-                with c3: radius = st.number_input("Radius (km)", min_value=1, value=30, step=1)
+                with c1:
+                    lat = st.number_input("Lat", value=47.4851, format="%.6f")
+                with c2:
+                    lon = st.number_input("Lon", value=-65.5618, format="%.6f")
+                with c3:
+                    radius = st.number_input("Radius (km)", min_value=1, value=30, step=1)
                 payload = {"lat": float(lat), "lon": float(lon), "radius_km": int(radius)}
+
             submitted = st.form_submit_button("Get Brief", type="primary")
 
+        # ---- Fetch on submit; cache the result so UI survives reruns ----
         if submitted and payload:
             try:
                 data = post_json(risk_url, payload, shared_secret or None, timeout=timeout_sec)
                 incident = (data or {}).get("incident") or {}
                 brief_md = (data or {}).get("brief_md") or "_No brief returned_"
 
-                # --- Top metrics
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Tier", data.get("tier_main", data.get("tier", "—")), data.get("tier_sub", ""))
-                m2.metric("Control", incident.get("control", "—"))
-                try:
-                    m3.metric("Size (ha)", int(incident.get("size_ha") or 0))
-                except Exception:
-                    m3.metric("Size (ha)", incident.get("size_ha", "—"))
-                m4.metric("Started", incident.get("started", "—"))
-
-                # --- Brief text
-                st.markdown(brief_md)
-
-                # --- Small map
-                if "lat" in incident and "lon" in incident:
-                    st.markdown("**Map**")
-                    view = pdk.ViewState(
-                        latitude=float(incident["lat"]),
-                        longitude=float(incident["lon"]),
-                        zoom=8, pitch=0
-                    )
-                    layer = pdk.Layer(
-                        "ScatterplotLayer",
-                        data=[{"lat": incident["lat"], "lon": incident["lon"]}],
-                        get_position=["lon", "lat"],
-                        get_radius=1000,
-                        radius_min_pixels=6,
-                        radius_max_pixels=60,
-                        pickable=False,
-                    )
-                    st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view))
-
-                    # --- Nearest places (Google Places) ---
-                    # Uses your existing `google_key` and top-level imports (requests, math).
-                    def _places_nearby(lat, lon, radius_m, api_key, types=("locality","sublocality","neighborhood")):
-                        url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
-                        out, seen = [], set()
-                        for t in types:
-                            params = {"location": f"{lat},{lon}", "radius": int(radius_m), "type": t, "key": api_key}
-                            r = requests.get(url, params=params, timeout=20); r.raise_for_status()
-                            for it in (r.json() or {}).get("results", []):
-                                pid = it.get("place_id")
-                                if not pid or pid in seen:
-                                    continue
-                                seen.add(pid)
-                                loc = (it.get("geometry") or {}).get("location") or {}
-                                plat, plon = float(loc.get("lat", 0)), float(loc.get("lng", 0))
-                                # haversine distance (km) from incident point
-                                R = 6371.0; p = math.pi/180.0
-                                dlat = (plat - float(lat)) * p
-                                dlon = (plon - float(lon)) * p
-                                a = math.sin(dlat/2)**2 + math.cos(float(lat)*p)*math.cos(plat*p)*math.sin(dlon/2)**2
-                                dist_km = 2 * R * math.asin(math.sqrt(a))
-                                out.append({
-                                    "name": it.get("name") or "(unnamed)",
-                                    "types": it.get("types") or [],
-                                    "lat": plat, "lon": plon,
-                                    "distance_km": round(dist_km, 2),
-                                })
-                        out.sort(key=lambda x: x["distance_km"])
-                        return out
-
-                    st.divider()
-                    st.markdown("**Nearest places (Google)**")
-
-                    if not google_key:
-                        st.info("Add GOOGLE_GEOCODING_API_KEY in App → Settings → Secrets to enable this.")
-                    else:
-                        c1, c2 = st.columns([2, 2])
-                        with c1:
-                            # Pick any radii you want (1, 20, 30, 40…)
-                            radius_choices = st.multiselect(
-                                "Show closest within (km)",
-                                options=[1, 5, 10, 20, 30, 40, 80],
-                                default=[20, 40],
-                            )
-                        with c2:
-                            type_choices = st.multiselect(
-                                "Place types",
-                                options=["locality", "sublocality", "neighborhood", "point_of_interest", "establishment"],
-                                default=["locality", "sublocality", "neighborhood"],
-                            )
-
-                        if st.button("Find nearest places"):
-                            lat_i, lon_i = float(incident["lat"]), float(incident["lon"])
-                            max_r = (max(radius_choices) if radius_choices else 40) * 1000  # meters
-                            places = _places_nearby(lat_i, lon_i, max_r, google_key, tuple(type_choices))
-
-                            if not places:
-                                st.info("No places returned by Google for these settings.")
-                            else:
-                                for R in sorted(radius_choices):
-                                    subset = [p for p in places if p["distance_km"] <= float(R)]
-                                    st.markdown(f"**≤ {R} km** — {len(subset)} place(s)")
-                                    if subset:
-                                        for p in subset[:12]:
-                                            t = ", ".join(p.get("types", [])[:3])
-                                            st.write(f"- {p['name']} — {p['distance_km']:.2f} km" + (f" · _{t}_" if t else ""))
-                                    else:
-                                        st.caption("none")
-
-                # --- Quick links / details
-                cA, cB = st.columns(2)
-                if (data or {}).get("map_link"):
-                    cA.link_button("Open in Google Maps", data["map_link"])
-                with cB:
-                    with st.popover("Details"):
-                        st.json(incident)
-
+                ss["brief_data"] = data
+                ss["brief_incident"] = incident
+                ss["brief_md"] = brief_md
             except requests.HTTPError as e:
                 st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
             except Exception as e:
                 st.error(f"Error fetching brief: {e}")
-
         elif submitted and not payload:
             st.warning("Enter a Fire ID or a location first.")
+
+        # ---- Render from cached values (so other buttons don’t clear the view) ----
+        data = ss.get("brief_data")
+        incident = ss.get("brief_incident", {})
+        brief_md = ss.get("brief_md")
+
+        if data and incident and brief_md:
+            # Top metrics
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Tier", data.get("tier_main", data.get("tier", "—")), data.get("tier_sub", ""))
+            m2.metric("Control", incident.get("control", "—"))
+            try:
+                m3.metric("Size (ha)", int(incident.get("size_ha") or 0))
+            except Exception:
+                m3.metric("Size (ha)", incident.get("size_ha", "—"))
+            m4.metric("Started", incident.get("started", "—"))
+
+            # Brief text
+            st.markdown(brief_md)
+
+            # Map + Nearest places (Google)
+            if "lat" in incident and "lon" in incident:
+                st.markdown("**Map**")
+                view = pdk.ViewState(
+                    latitude=float(incident["lat"]),
+                    longitude=float(incident["lon"]),
+                    zoom=8, pitch=0
+                )
+                layer = pdk.Layer(
+                    "ScatterplotLayer",
+                    data=[{"lat": incident["lat"], "lon": incident["lon"]}],
+                    get_position=["lon", "lat"],
+                    get_radius=1000,
+                    radius_min_pixels=6,
+                    radius_max_pixels=60,
+                    pickable=False,
+                )
+                st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view))
+
+                # --- Nearest places (Google Places) ---
+                def _places_nearby(lat, lon, radius_m, api_key, types=("locality", "sublocality", "neighborhood")):
+                    url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+                    out, seen = [], set()
+                    for t in types:
+                        params = {"location": f"{lat},{lon}", "radius": int(radius_m), "type": t, "key": api_key}
+                        r = requests.get(url, params=params, timeout=20); r.raise_for_status()
+                        for it in (r.json() or {}).get("results", []):
+                            pid = it.get("place_id")
+                            if not pid or pid in seen:
+                                continue
+                            seen.add(pid)
+                            loc = (it.get("geometry") or {}).get("location") or {}
+                            plat, plon = float(loc.get("lat", 0)), float(loc.get("lng", 0))
+                            # haversine (km)
+                            R = 6371.0; p = math.pi/180.0
+                            dlat = (plat - float(lat)) * p
+                            dlon = (plon - float(lon)) * p
+                            a = math.sin(dlat/2)**2 + math.cos(float(lat)*p)*math.cos(plat*p)*math.sin(dlon/2)**2
+                            dist_km = 2 * R * math.asin(math.sqrt(a))
+                            out.append({
+                                "name": it.get("name") or "(unnamed)",
+                                "types": it.get("types") or [],
+                                "lat": plat, "lon": plon,
+                                "distance_km": round(dist_km, 2),
+                            })
+                    out.sort(key=lambda x: x["distance_km"])
+                    return out
+
+                st.divider()
+                st.markdown("**Nearest places (Google)**")
+
+                if not google_key:
+                    st.info("Add GOOGLE_GEOCODING_API_KEY in App → Settings → Secrets to enable this.")
+                else:
+                    c1, c2 = st.columns([2, 2])
+                    with c1:
+                        radius_choices = st.multiselect(
+                            "Show closest within (km)",
+                            options=[1, 5, 10, 20, 30, 40, 80],
+                            default=[20, 40],
+                        )
+                    with c2:
+                        type_choices = st.multiselect(
+                            "Place types",
+                            options=["locality", "sublocality", "neighborhood", "point_of_interest", "establishment"],
+                            default=["locality", "sublocality", "neighborhood"],
+                        )
+
+                    if st.button("Find nearest places"):
+                        lat_i, lon_i = float(incident["lat"]), float(incident["lon"])
+                        max_r = (max(radius_choices) if radius_choices else 40) * 1000  # meters
+                        places = _places_nearby(lat_i, lon_i, max_r, google_key, tuple(type_choices))
+
+                        if not places:
+                            st.info("No places returned by Google for these settings.")
+                        else:
+                            for R in sorted(radius_choices):
+                                subset = [p for p in places if p["distance_km"] <= float(R)]
+                                st.markdown(f"**≤ {R} km** — {len(subset)} place(s)")
+                                if subset:
+                                    for p in subset[:12]:
+                                        t = ", ".join(p.get("types", [])[:3])
+                                        st.write(f"- {p['name']} — {p['distance_km']:.2f} km" + (f" · _{t}_" if t else ""))
+                                else:
+                                    st.caption("none")
+
+            # Quick links / details
+            cA, cB = st.columns(2)
+            if (data or {}).get("map_link"):
+                cA.link_button("Open in Google Maps", data["map_link"])
+            with cB:
+                with st.popover("Details"):
+                    st.json(incident)
 
 # ===== TAB 3: SAFER Fire Alert =====
 with t3:
