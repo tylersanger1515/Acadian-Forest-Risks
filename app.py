@@ -296,7 +296,7 @@ with t1:
             return ("max", val)
     return None
 
-**If a wildfire is near you (≤40 km):**
+st.markdown("**If a wildfire is near you (≤ 40 km):**")
 - **Call 911** if you see fire/smoke threatening people or property, or if told to evacuate.
 - **Contact your provincial forestry / wildfire line** to report details if safe.
 - **Prepare a go-bag:** ID, meds/prescriptions, chargers, cash, water/snacks, clothing, sturdy shoes, flashlight, important docs, pet supplies, masks (N95), glasses.
