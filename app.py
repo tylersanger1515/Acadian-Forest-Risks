@@ -364,22 +364,6 @@ with t1:
                     best = (city, d)
             return best
 
-
-        def _nearest_place_intent(text: str):
-            t = (text or "").lower().strip()
-            patterns = [
-                r'what\s+place\s+is\s+closest\s+to\s+(?:fire\s*)?(\d{3,6})',
-                r'which\s+place\s+is\s+closest\s+to\s+(?:fire\s*)?(\d{3,6})',
-                r'what\s+city\s+is\s+closest\s+to\s+(?:fire\s*)?(\d{3,6})',
-                r'which\s+city\s+is\s+closest\s+to\s+(?:fire\s*)?(\d{3,6})',
-                r'(?:nearest|closest)\s+(?:place|city)\s+(?:to|for)\s+(?:fire\s*)?(\d{3,6})',
-            ]
-            for p in patterns:
-                m = re.search(p, t)
-                if m:
-                    return m.group(1)
-            return None
-
         # ---------- Q&A engine ----------
         def render_qna(q_text: str):
             try:
@@ -391,28 +375,6 @@ with t1:
                 date_label = raw.get("date", "today")
 
                 text = (q_text or "").lower().strip()
-
-                # Handle: "what/which place/city is closest to fire <id>" (robust intent)
-                _fid_np = _nearest_place_intent(text)
-                if _fid_np:
-                    _best = _nearest_place_to_fire(_fid_np)
-                    if not _best:
-                        st.info(f"Fire {_fid_np} not found or no reference places were geocoded yet.")
-                    else:
-                        # Google Maps links if we have coordinates
-                        _f = next((x for x in fires if str(x.get("name")) == _fid_np), None)
-                        _latf, _lonf = (_lat(_f), _lon(_f)) if _f else (None, None)
-                        _fire_link = (f"https://www.google.com/maps/search/?api=1&query={_latf:.5f},{_lonf:.5f}"
-                                      if (_latf is not None and _lonf is not None) else None)
-                        _place_ll = _geocode_city(_best[0])
-                        _place_link = (f"https://www.google.com/maps/search/?api=1&query={_place_ll[0]:.5f},{_place_ll[1]:.5f}"
-                                       if _place_ll else None)
-                        st.markdown(f"**Closest place to fire {_fid_np}: {_best[0]} — {_best[1]:.1f} km**")
-                        _links = []
-                        if _fire_link: _links.append(f"[Fire location]({_fire_link})")
-                        if _place_link: _links.append(f"[{_best[0]}]({_place_link})")
-                        if _links: st.caption(" · ".join(_links))
-                    return
 
                 # province filters (support multiple)
                 want = []
@@ -625,11 +587,6 @@ with t1:
                     return
 
                 if mode == "closest" and place:
-                    if re.match(r'^\s*fire\s*\d+', place.strip(), flags=re.I):
-                        # Looks like 'closest to fire <id>' which we handle earlier; skip generic branch.
-                        pass
-                    else:
-
                     fs, show_km, label = attach_distances(subset[:], place)
                     if not show_km:
                         st.info(f"Couldn’t locate “{place}”. Try “closest to Truro, NS”."); return
@@ -805,11 +762,80 @@ with t2:
                     )
                     st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view))
 
+                    # --- Nearest places (Google Places) ---
+                    # Uses your existing `google_key` and top-level imports (requests, math).
+                    def _places_nearby(lat, lon, radius_m, api_key, types=("locality","sublocality","neighborhood")):
+                        url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+                        out, seen = [], set()
+                        for t in types:
+                            params = {"location": f"{lat},{lon}", "radius": int(radius_m), "type": t, "key": api_key}
+                            r = requests.get(url, params=params, timeout=20); r.raise_for_status()
+                            for it in (r.json() or {}).get("results", []):
+                                pid = it.get("place_id")
+                                if not pid or pid in seen:
+                                    continue
+                                seen.add(pid)
+                                loc = (it.get("geometry") or {}).get("location") or {}
+                                plat, plon = float(loc.get("lat", 0)), float(loc.get("lng", 0))
+                                # haversine distance (km) from incident point
+                                R = 6371.0; p = math.pi/180.0
+                                dlat = (plat - float(lat)) * p
+                                dlon = (plon - float(lon)) * p
+                                a = math.sin(dlat/2)**2 + math.cos(float(lat)*p)*math.cos(plat*p)*math.sin(dlon/2)**2
+                                dist_km = 2 * R * math.asin(math.sqrt(a))
+                                out.append({
+                                    "name": it.get("name") or "(unnamed)",
+                                    "types": it.get("types") or [],
+                                    "lat": plat, "lon": plon,
+                                    "distance_km": round(dist_km, 2),
+                                })
+                        out.sort(key=lambda x: x["distance_km"])
+                        return out
+
+                    st.divider()
+                    st.markdown("**Nearest places (Google)**")
+
+                    if not google_key:
+                        st.info("Add GOOGLE_GEOCODING_API_KEY in App → Settings → Secrets to enable this.")
+                    else:
+                        c1, c2 = st.columns([2, 2])
+                        with c1:
+                            # Pick any radii you want (1, 20, 30, 40…)
+                            radius_choices = st.multiselect(
+                                "Show closest within (km)",
+                                options=[1, 5, 10, 20, 30, 40, 80],
+                                default=[20, 40],
+                            )
+                        with c2:
+                            type_choices = st.multiselect(
+                                "Place types",
+                                options=["locality", "sublocality", "neighborhood", "point_of_interest", "establishment"],
+                                default=["locality", "sublocality", "neighborhood"],
+                            )
+
+                        if st.button("Find nearest places"):
+                            lat_i, lon_i = float(incident["lat"]), float(incident["lon"])
+                            max_r = (max(radius_choices) if radius_choices else 40) * 1000  # meters
+                            places = _places_nearby(lat_i, lon_i, max_r, google_key, tuple(type_choices))
+
+                            if not places:
+                                st.info("No places returned by Google for these settings.")
+                            else:
+                                for R in sorted(radius_choices):
+                                    subset = [p for p in places if p["distance_km"] <= float(R)]
+                                    st.markdown(f"**≤ {R} km** — {len(subset)} place(s)")
+                                    if subset:
+                                        for p in subset[:12]:
+                                            t = ", ".join(p.get("types", [])[:3])
+                                            st.write(f"- {p['name']} — {p['distance_km']:.2f} km" + (f" · _{t}_" if t else ""))
+                                    else:
+                                        st.caption("none")
+
                 # --- Quick links / details
-                c1, c2 = st.columns(2)
+                cA, cB = st.columns(2)
                 if (data or {}).get("map_link"):
-                    c1.link_button("Open in Google Maps", data["map_link"])
-                with c2:
+                    cA.link_button("Open in Google Maps", data["map_link"])
+                with cB:
                     with st.popover("Details"):
                         st.json(incident)
 
@@ -817,6 +843,7 @@ with t2:
                 st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
             except Exception as e:
                 st.error(f"Error fetching brief: {e}")
+
         elif submitted and not payload:
             st.warning("Enter a Fire ID or a location first.")
 
