@@ -244,410 +244,469 @@ with t1:
         if ss.get("fires_html"):
             components.html(ss["fires_html"], height=820, scrolling=True)
 
-   # ================= RIGHT: Q&A + SAFETY CHECK =================
-with right:
-    import re, math, datetime as dt, requests
+     # ================= RIGHT: Q&A + SAFETY CHECK =================
+    with right:
+        import re, math, datetime as dt, requests
 
-    st.markdown("#### Ask about today’s fires")
-    q = st.text_input(
-        "Your question",
-        placeholder=(
-            "e.g., Which fires are Out of Control? | within 40 km of Halifax | "
-            "any fires 40km away from Halifax | top 4 largest in NB | largest per province | "
-            "still 0.1 ha after 5 days | started last week | older than eight days"
-        ),
-        key="q_fires",
-    )
-    ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
-
-    # ---------- helpers ----------
-    def _norm(s): return (s or "").strip()
-    def _prov(f): return _norm((f.get("agency") or "").upper())
-    def _ctrl_text(f): return _norm((f.get("control") or f.get("status") or "")).lower()
-    def _sizeha(f):
-        try: return float(f.get("size_ha") or 0.0)
-        except: return 0.0
-    def _started_s(f): return _norm(str(f.get("started") or ""))[:10]
-    def _lat(f):
-        try: return float(f.get("lat"))
-        except: return None
-    def _lon(f):
-        try: return float(f.get("lon"))
-        except: return None
-    def _date_iso(s):
-        try: return dt.date.fromisoformat((s or "")[:10])
-        except Exception: return None
-
-    def haversine_km(lat1, lon1, lat2, lon2):
-        R = 6371.0; p = math.pi/180.0
-        dlat = (lat2-lat1)*p; dlon = (lon2-lon1)*p
-        a = math.sin(dlat/2)**2 + math.cos(lat1*p)*math.cos(lat2*p)*math.sin(dlon/2)**2
-        return R*2*math.asin(math.sqrt(a))
-
-    def fmt_fire_line(f, show_km=False):
-        base = f"- {f.get('name','(id?)')} — {_prov(f)} · {_sizeha(f):,.1f} ha · {f.get('control','—')}"
-        if show_km and f.get('_dist_km') is not None:
-            base += f" · {f['_dist_km']:.1f} km"
-        base += f" · Started {_started_s(f) or '—'}"
-        return base
-
-    # number words → ints for days parsing
-    _NUM_WORDS = {
-        "one":1, "two":2, "three":3, "four":4, "five":5,
-        "six":6, "seven":7, "eight":8, "nine":9, "ten":10,
-        "eleven":11, "twelve":12, "thirteen":13, "fourteen":14,
-    }
-    def _num_from_words(t:str) -> str:
-        if not _NUM_WORDS: return t
-        return re.sub(
-            r'\b(' + "|".join(_NUM_WORDS.keys()) + r')\b',
-            lambda m: str(_NUM_WORDS[m.group(1)]),
-            t or "",
+        st.markdown("#### Ask about today’s fires")
+        q = st.text_input(
+            "Your question",
+            placeholder=(
+                "e.g., fires near Halifax • within 40 km of Truro • closest to Moncton • "
+                "top 4 largest in NB • counts by province • total hectares by province • "
+                "where is fire 68622 • started last 7 days • older than 3 days • "
+                "still 0.1 ha after 5 days"
+            ),
+            key="q_fires",
         )
+        ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
 
-    # size phrases
-    def parse_size_range(text):
-        t = (text or "").lower()
-        nums = [float(x) for x in re.findall(r'(\d+(?:\.\d+)?)\s*ha?', t)]
-        if "between" in t and "and" in t and len(nums) >= 2:
-            a, b = sorted(nums[:2]); return ("between", a, b)
-        if any(w in t for w in ["over","more than",">=","at least","minimum","min "]):
-            return ("min", nums[0]) if nums else None
-        if any(w in t for w in ["under","less than","<=","at most","maximum","below","max "]):
-            return ("max", nums[0]) if nums else None
-        if ">" in t and nums: return ("min", nums[0])
-        if "<" in t and nums: return ("max", nums[0])
-        return None
+        # ---------- tiny helpers ----------
+        def _norm(s): return (s or "").strip()
+        def _prov(f): return _norm((f.get("agency") or "").upper())
+        def _ctrl_text(f): return _norm((f.get("control") or f.get("status") or "")).lower()
+        def _sizeha(f):
+            try: return float(f.get("size_ha") or 0.0)
+            except: return 0.0
+        def _started_s(f): return _norm(str(f.get("started") or ""))[:10]
 
-    # days window
-    def parse_days_window(text: str):
-        s2 = _num_from_words((text or "").lower())
-        end = _date_iso(st.session_state.get("fires_payload", {}).get("date")) or dt.date.today()
-        m = re.search(r'(?:last|past)\s+(\d+)\s+day', s2)
-        if m: d = int(m.group(1));  return (end - dt.timedelta(days=d), end, "past")
-        m = re.search(r'(?:last|past)\s+(\d+)\s+week', s2)
-        if m: w = int(m.group(1));  return (end - dt.timedelta(days=7*w), end, "past")
-        m = re.search(r'(?:older\s+than|at\s+least|>=)\s+(\d+)\s+day(?:s)?(?:\s+ago)?', s2)
-        if m: d = int(m.group(1));  return (None, end - dt.timedelta(days=d), "older")
-        m = re.search(r'(\d+)\s+day(?:s)?\s+ago', s2)
-        if m: d = int(m.group(1));  return (None, end - dt.timedelta(days=d), "older")
-        if "last week" in s2 or "past week" in s2: return (end - dt.timedelta(days=7), end, "past")
-        if "last 7 days" in s2: return (end - dt.timedelta(days=7), end, "past")
-        return (None, None, "")
+        def _lat(f):
+            try: return float(f.get("lat"))
+            except: return None
+        def _lon(f):
+            try: return float(f.get("lon"))
+            except: return None
 
-    # geo intent parsing (many phrasings)
-    def parse_geo(text):
-        t = (text or "").lower().strip()
-        # within 40 km of Halifax / 40 km near Halifax / 40km away from Halifax / 40km from Halifax
-        m = re.search(r'within\s+(\d+(?:\.\d+)?)\s*km\s+(?:of|from)\s+(.+)', t)
-        if m: return ("within", float(m.group(1)), m.group(2).strip())
-        m = re.search(r'(\d+(?:\.\d+)?)\s*km\s+(?:near|around|about)\s+(.+)', t)
-        if m: return ("within", float(m.group(1)), m.group(2).strip())
-        m = re.search(r'(?:any\s+fires\s+)?(\d+(?:\.\d+)?)\s*km\s+(?:away\s+from|from|of)\s+(.+)', t)
-        if m: return ("within", float(m.group(1)), m.group(2).strip())
-        # closest / nearest
-        m = re.search(r'(?:top\s+(\d+)\s+)?(?:closest|nearest)(?:\s+fire)?\s+(?:to|near)\s+(.+)', t)
-        if m: return ("closest", int(m.group(1) or 1), m.group(2).strip())
-        # “near Truro”, “close to Halifax”
-        m = re.search(r'\b(?:near|nearby|close to)\s+(.+)', t)
-        if m: return ("within", 40.0, m.group(1).strip())
-        return (None, None, None)
+        def _date_iso(s):
+            try: return dt.date.fromisoformat((s or "")[:10])
+            except Exception: return None
 
-    # geocode using app helper when available
-    def geocode_place(name: str):
-        qtext = (name or "").strip()
-        if not qtext: return None
-        qtext = re.sub(r'\bwithin\s+\d+(?:\.\d+)?\s*km\b', '', qtext, flags=re.I).strip(",.;: ")
-        try:
-            g = geocode_address(qtext, opencage_key, google_key)  # uses the app's helper
-            if g: return float(g[0]), float(g[1]), g[2]
-        except Exception:
-            pass
-        # fallbacks (in case helper is not available)
-        try:
-            if google_key:
-                r = requests.get(
-                    "https://maps.googleapis.com/maps/api/geocode/json",
-                    params={"address": f"{qtext}, Canada", "region": "ca", "key": google_key},
-                    timeout=10,
-                ).json()
-                if r.get("status") == "OK" and r.get("results"):
-                    loc = r["results"][0]["geometry"]["location"]
-                    return float(loc["lat"]), float(loc["lng"]), r["results"][0].get("formatted_address", qtext)
-        except Exception:
-            pass
-        try:
-            if opencage_key:
-                r = requests.get(
-                    "https://api.opencagedata.com/geocode/v1/json",
-                    params={"q": f"{qtext}, Canada", "key": opencage_key, "limit": 1, "countrycode": "ca", "no_annotations": 1},
-                    timeout=10,
-                ).json()
-                if r.get("results"):
-                    loc = r["results"][0]["geometry"]
-                    return float(loc["lat"]), float(loc["lng"]), r["results"][0].get("formatted", qtext)
-        except Exception:
-            pass
-        return None
+        def haversine_km(lat1, lon1, lat2, lon2):
+            R = 6371.0; p = math.pi/180.0
+            dlat = (lat2-lat1)*p; dlon = (lon2-lon1)*p
+            a = math.sin(dlat/2)**2 + math.cos(lat1*p)*math.cos(lat2*p)*math.sin(dlon/2)**2
+            return R*2*math.asin(math.sqrt(a))
 
-    def attach_distances(fs, where):
-        g = geocode_place(where)
-        if not g:  # no distances if we couldn't geocode
-            return fs, False, where
-        lat0, lon0, label = g
-        for f in fs:
-            d = haversine_km(lat0, lon0, _lat(f), _lon(f))
-            f["_dist_km"] = d
-        return fs, True, label
+        def fmt_fire_line(f, show_km=False):
+            base = f"- {f.get('name','(id?)')} — {_prov(f)} · {_sizeha(f):,.1f} ha · {f.get('control','—')}"
+            if show_km and f.get('_dist_km') is not None:
+                base += f" · {f['_dist_km']:.1f} km"
+            base += f" · Started {_started_s(f) or '—'}"
+            return base
 
-    # ---------- Q&A ----------
-def render_qna(q_text: str):
-    try:
-        raw = st.session_state.get("fires_payload") or post_json(
-            fires_url, {"from": "streamlit"}, shared_secret or None, timeout=timeout_sec
-        )
-        fires = raw.get("fires") or []
-        date_label = raw.get("date", "today")
+        # number words → ints for day parsing
+        _NUM_WORDS = {
+            "one":1, "two":2, "three":3, "four":4, "five":5,
+            "six":6, "seven":7, "eight":8, "nine":9, "ten":10,
+            "eleven":11, "twelve":12, "thirteen":13, "fourteen":14,
+        }
+        def _num_from_words(t:str) -> str:
+            return re.sub(
+                r'\b(' + "|".join(_NUM_WORDS.keys()) + r')\b',
+                lambda m: str(_NUM_WORDS[m.group(1)]),
+                t or "",
+            )
 
-        text = (q_text or "").lower().strip()
+        # size phrases
+        def parse_size_range(text):
+            t = (text or "").lower()
+            nums = [float(x) for x in re.findall(r'(\d+(?:\.\d+)?)\s*ha?', t)]
+            if "between" in t and "and" in t and len(nums) >= 2:
+                a, b = sorted(nums[:2]); return ("between", a, b)
+            if any(w in t for w in ["over","more than",">=","at least","minimum","min "]):
+                return ("min", nums[0]) if nums else None
+            if any(w in t for w in ["under","less than","<=","at most","maximum","below","max "]):
+                return ("max", nums[0]) if nums else None
+            if ">" in t and nums: return ("min", nums[0])
+            if "<" in t and nums: return ("max", nums[0])
+            return None
 
-        # --- province filters (support multiple) ---
-        want = []
-        if re.search(r'\bnb\b|new brunswick', text): want.append("NB")
-        if re.search(r'\bns\b|nova scotia', text):  want.append("NS")
-        if re.search(r'\bnl\b|newfoundland|labrador', text): want.append("NL")
-        subset = [f for f in fires if (_prov(f) in want)] if want else list(fires)
+        # time window: last/past/older
+        def parse_days_window(text: str):
+            s2 = _num_from_words((text or "").lower())
+            end = _date_iso(st.session_state.get("fires_payload", {}).get("date")) or dt.date.today()
+            m = re.search(r'(?:last|past)\s+(\d+)\s+day', s2)
+            if m: d = int(m.group(1));  return (end - dt.timedelta(days=d), end, "past")
+            m = re.search(r'(?:last|past)\s+(\d+)\s+week', s2)
+            if m: w = int(m.group(1));  return (end - dt.timedelta(days=7*w), end, "past")
+            m = re.search(r'(?:older\s+than|at\s+least|>=)\s+(\d+)\s+day(?:s)?(?:\s+ago)?', s2)
+            if m: d = int(m.group(1));  return (None, end - dt.timedelta(days=d), "older")
+            m = re.search(r'(\d+)\s+day(?:s)?\s+ago', s2)
+            if m: d = int(m.group(1));  return (None, end - dt.timedelta(days=d), "older")
+            if "last week" in s2 or "past week" in s2: return (end - dt.timedelta(days=7), end, "past")
+            if "last 7 days" in s2: return (end - dt.timedelta(days=7), end, "past")
+            return (None, None, "")
 
-        # --- control filter (synonyms) ---
-        want_ctrl = None
-        text_norm = text.replace("-", " ")
-        if re.search(r"\bout of control\b|\booc\b", text_norm):
-            want_ctrl = "out of control"
-        elif re.search(r"\bbeing held\b|\bbh\b|\bheld\b", text_norm):
-            want_ctrl = "being held"
-        elif re.search(r"\bunder control\b|\buc\b|\bcontained\b|\bcontrolled\b", text_norm):
-            want_ctrl = "under control"
-        if want_ctrl:
-            subset = [f for f in subset if want_ctrl in _ctrl_text(f)]
+        # geo intent parsing (lots of phrasings)
+        def parse_geo(text):
+            t = (text or "").lower().strip()
+            # within 40 km of Halifax / 40 km near Halifax / 40km away from Halifax / 40km from Halifax
+            m = re.search(r'within\s+(\d+(?:\.\d+)?)\s*km\s+(?:of|from)\s+(.+)', t)
+            if m: return ("within", float(m.group(1)), m.group(2).strip())
+            m = re.search(r'(\d+(?:\.\d+)?)\s*km\s+(?:near|around|about)\s+(.+)', t)
+            if m: return ("within", float(m.group(1)), m.group(2).strip())
+            m = re.search(r'(?:any\s+fires\s+)?(\d+(?:\.\d+)?)\s*km\s+(?:away\s+from|from|of)\s+(.+)', t)
+            if m: return ("within", float(m.group(1)), m.group(2).strip())
+            # closest / nearest
+            m = re.search(r'(?:top\s+(\d+)\s+)?(?:closest|nearest)(?:\s+fire)?\s+(?:to|near)\s+(.+)', t)
+            if m: return ("closest", int(m.group(1) or 1), m.group(2).strip())
+            # “near Truro”, “close to Halifax”
+            m = re.search(r'\b(?:near|nearby|close to)\s+(.+)', t)
+            if m: return ("within", 40.0, m.group(1).strip())
+            return (None, None, None)
 
-        # --- size range ---
-        rng = parse_size_range(text)
-        if rng:
-            if rng[0] == "between":
-                a, b = rng[1], rng[2]; subset = [f for f in subset if a <= _sizeha(f) <= b]
-            elif rng[0] == "min":
-                subset = [f for f in subset if _sizeha(f) >= rng[1]]
-            elif rng[0] == "max":
-                subset = [f for f in subset if _sizeha(f) <= rng[1]]
+        # geocode using app helper when available
+        def geocode_place(name: str):
+            qtext = (name or "").strip()
+            if not qtext: return None
+            qtext = re.sub(r'\bwithin\s+\d+(?:\.\d+)?\s*km\b', '', qtext, flags=re.I).strip(",.;: ")
+            try:
+                g = geocode_address(qtext, opencage_key, google_key)  # defined above in your app
+                if g: return float(g[0]), float(g[1]), g[2]
+            except Exception:
+                pass
+            return None
 
-        # --- time window (last/past/older) ---
-        d_from, d_to, _tag = parse_days_window(text)
-        if d_from or d_to:
-            def in_window(f):
-                d = _date_iso(_started_s(f))
-                if not d: return False
-                if d_from and d < d_from: return False
-                if d_to   and d > d_to:   return False
-                return True
-            subset = [f for f in subset if in_window(f)]
+        def attach_distances(fs, where):
+            g = geocode_place(where)
+            if not g:  # no distances if we couldn't geocode
+                return fs, False, where
+            lat0, lon0, label = g
+            for f in fs:
+                d = haversine_km(lat0, lon0, _lat(f), _lon(f))
+                f["_dist_km"] = d
+            return fs, True, label
 
-        # --- new fires today ---
-        if any(w in text for w in ["new fire", "new fires", "started today", "today only"]):
-            today = _date_iso(date_label) or dt.date.today()
-            sf = [f for f in fires if (_date_iso(_started_s(f)) == today)]
-            if not sf:
-                st.info(f"No new fires for {date_label}.")
-            else:
-                st.markdown(f"**New fires — {date_label} ({len(sf)}):**")
-                for f in sf: st.write(fmt_fire_line(f))
-            return
+        # ---------- Q&A engine ----------
+        def render_qna(q_text: str):
+            try:
+                raw = st.session_state.get("fires_payload") or post_json(
+                    fires_url, {"from": "streamlit"}, shared_secret or None, timeout=timeout_sec
+                )
+                fires = raw.get("fires") or []
+                date_label = raw.get("date", "today")
 
-        # --- totals (hectares) by province ---
-        if (any(w in text for w in ["hectare","hectares","ha","burnt","burned"])
-            and ("by province" in text or "per province" in text or ("province" in text and "total" in text))):
-            totals = {}
-            for f in fires:
-                p = _prov(f)
-                if p: totals[p] = totals.get(p, 0.0) + _sizeha(f)
-            if totals:
-                st.markdown(f"**Total hectares by province — {date_label}:**")
-                for p, v in sorted(totals.items()):
-                    st.write(f"- {p}: {v:,.1f} ha")
-            else:
-                st.info("No data.")
-            return
+                text = (q_text or "").lower().strip()
 
-        # --- overall total hectares ---
-        if (any(w in text for w in ["hectare","hectares","ha"]) and "total" in text and "province" not in text):
-            tot = sum(_sizeha(f) for f in fires)
-            st.markdown(f"**Total area across all active fires — {date_label}: {tot:,.1f} ha**")
-            return
+                # province filters (support multiple)
+                want = []
+                if re.search(r'\bnb\b|new brunswick', text): want.append("NB")
+                if re.search(r'\bns\b|nova scotia', text):  want.append("NS")
+                if re.search(r'\bnl\b|newfoundland|labrador', text): want.append("NL")
+                subset = [f for f in fires if (_prov(f) in want)] if want else list(fires)
 
-        # --- counts by province ( “total fires in each province” ) ---
-        if (("how many" in text or "count" in text or "number of" in text or "total fires" in text)
-            and ("by province" in text or "per province" in text or "each province" in text)):
-            from collections import Counter
-            counts = Counter(_prov(f) for f in fires if _prov(f))
-            if counts:
-                st.markdown(f"**Active fires by province — {date_label}:**")
-                for p, c in counts.most_common():
-                    st.write(f"- {p}: {c}")
-            else:
-                st.info("No active fires found.")
-            return
+                # control synonyms
+                want_ctrl = None
+                tnorm = text.replace("-", " ")
+                if re.search(r"\bout of control\b|\booc\b", tnorm):
+                    want_ctrl = "out of control"
+                elif re.search(r"\bbeing held\b|\bbh\b|\bheld\b", tnorm):
+                    want_ctrl = "being held"
+                elif re.search(r"\bunder control\b|\buc\b|\bcontained\b|\bcontrolled\b", tnorm):
+                    want_ctrl = "under control"
+                if want_ctrl:
+                    subset = [f for f in subset if want_ctrl in _ctrl_text(f)]
 
-        # --- province with most active fires ---
-        if "most" in text and "province" in text and "fire" in text:
-            from collections import Counter
-            counts = Counter(_prov(f) for f in fires if _prov(f))
-            if counts:
-                p, c = counts.most_common(1)[0]
-                st.markdown(f"**{p}** has the most active fires today ({c}).")
-            else:
-                st.info("No active fires found.")
-            return
+                # size range
+                rng = parse_size_range(text)
+                if rng:
+                    if rng[0] == "between":
+                        a, b = rng[1], rng[2]; subset = [f for f in subset if a <= _sizeha(f) <= b]
+                    elif rng[0] == "min":
+                        subset = [f for f in subset if _sizeha(f) >= rng[1]]
+                    elif rng[0] == "max":
+                        subset = [f for f in subset if _sizeha(f) <= rng[1]]
 
-        # --- largest per province ---
-        if "largest" in text and ("per province" in text or "by province" in text):
-            best = {}
-            for f in fires:
-                p = _prov(f)
-                if not p: continue
-                if p not in best or _sizeha(f) > _sizeha(best[p]): best[p] = f
-            if best:
-                st.markdown(f"**Largest fire per province — {date_label}:**")
-                for p in ("NB","NL","NS"):
-                    if p in best: st.write(fmt_fire_line(best[p]))
-            else:
-                st.info("No data.")
-            return
+                # time window
+                d_from, d_to, _tag = parse_days_window(text)
+                if d_from or d_to:
+                    def in_window(f):
+                        d = _date_iso(_started_s(f))
+                        if not d: return False
+                        if d_from and d < d_from: return False
+                        if d_to   and d > d_to:   return False
+                        return True
+                    subset = [f for f in subset if in_window(f)]
 
-        # --- top N largest (uses current subset, so “in NL” works) ---
-        if "top" in text and "largest" in text:
-            m = re.search(r'top\s+(\d+)', text); k = int(m.group(1)) if m else 5
-            biggest = sorted(subset, key=_sizeha, reverse=True)[:k]
-            st.markdown(f"**Top {k} largest fires — {date_label}:**" if biggest else "No fires found.")
-            for f in biggest: st.write(fmt_fire_line(f))
-            return
+                # new today
+                if any(w in text for w in ["new fire", "new fires", "started today", "today only"]):
+                    today = _date_iso(date_label) or dt.date.today()
+                    sf = [f for f in fires if (_date_iso(_started_s(f)) == today)]
+                    if not sf:
+                        st.info(f"No new fires for {date_label}.")
+                    else:
+                        st.markdown(f"**New fires — {date_label} ({len(sf)}):**")
+                        for f in sf: st.write(fmt_fire_line(f))
+                    return
 
-        # --- largest in current subset (e.g., “largest in NB”) ---
-        if "largest" in text and (" in " in text or want):
-            if not subset: st.info("No matching fires."); return
-            f = max(subset, key=_sizeha)
-            st.markdown(f"**Largest fire — {date_label}:**")
-            st.write(fmt_fire_line(f))
-            return
+                # totals by province (hectares)
+                if (any(w in text for w in ["hectare","hectares","ha","burnt","burned"])
+                    and ("by province" in text or "per province" in text or ("province" in text and "total" in text))):
+                    totals = {}
+                    for f in fires:
+                        p = _prov(f)
+                        if p: totals[p] = totals.get(p, 0.0) + _sizeha(f)
+                    if totals:
+                        st.markdown(f"**Total hectares by province — {date_label}:**")
+                        for p, v in sorted(totals.items()):
+                            st.write(f"- {p}: {v:,.1f} ha")
+                    else:
+                        st.info("No data.")
+                    return
 
-        # --- fire by id/name: “where is fire 68622 / location of 68622” ---
-        m_id = re.search(r'\b(\d{3,6})\b', text)
-        if any(key in text for key in ["where is", "what location", "location of", "loc of", "coords of"]) and m_id:
-            fid = m_id.group(1)
-            f = next((x for x in fires if str(x.get("name")) == fid), None)
-            if not f:
-                st.info(f"Fire {fid} not found.")
-            else:
-                lat, lon = _lat(f), _lon(f)
-                st.markdown(f"**Location for fire {fid} — {date_label}:**")
+                # overall total hectares
+                if (any(w in text for w in ["hectare","hectares","ha"]) and "total" in text and "province" not in text):
+                    tot = sum(_sizeha(f) for f in fires)
+                    st.markdown(f"**Total area across all active fires — {date_label}: {tot:,.1f} ha**")
+                    return
+
+                # counts by province
+                if (("how many" in text or "count" in text or "number of" in text or "total fires" in text)
+                    and ("by province" in text or "per province" in text or "each province" in text)):
+                    from collections import Counter
+                    counts = Counter(_prov(f) for f in fires if _prov(f))
+                    if counts:
+                        st.markdown(f"**Active fires by province — {date_label}:**")
+                        for p, c in counts.most_common():
+                            st.write(f"- {p}: {c}")
+                    else:
+                        st.info("No active fires found.")
+                    return
+
+                # province with most
+                if "most" in text and "province" in text and "fire" in text:
+                    from collections import Counter
+                    counts = Counter(_prov(f) for f in fires if _prov(f))
+                    if counts:
+                        p, c = counts.most_common(1)[0]
+                        st.markdown(f"**{p}** has the most active fires today ({c}).")
+                    else:
+                        st.info("No active fires found.")
+                    return
+
+                # largest per province
+                if "largest" in text and ("per province" in text or "by province" in text):
+                    best = {}
+                    for f in fires:
+                        p = _prov(f)
+                        if not p: continue
+                        if p not in best or _sizeha(f) > _sizeha(best[p]): best[p] = f
+                    if best:
+                        st.markdown(f"**Largest fire per province — {date_label}:**")
+                        for p in ("NB","NL","NS"):
+                            if p in best: st.write(fmt_fire_line(best[p]))
+                    else:
+                        st.info("No data.")
+                    return
+
+                # top N largest (uses current subset)
+                if "top" in text and "largest" in text:
+                    m = re.search(r'top\s+(\d+)', text); k = int(m.group(1)) if m else 5
+                    biggest = sorted(subset, key=_sizeha, reverse=True)[:k]
+                    st.markdown(f"**Top {k} largest fires — {date_label}:**" if biggest else "No fires found.")
+                    for f in biggest: st.write(fmt_fire_line(f))
+                    return
+
+                # largest in current subset
+                if "largest" in text and (" in " in text or want):
+                    if not subset: st.info("No matching fires."); return
+                    f = max(subset, key=_sizeha)
+                    st.markdown(f"**Largest fire — {date_label}:**")
+                    st.write(fmt_fire_line(f))
+                    return
+
+                # where is fire 68622 / location of <id>
+                m_id = re.search(r'\b(\d{3,6})\b', text)
+                if any(k in text for k in ["where is","what location","location of","loc of","coords of"]) and m_id:
+                    fid = m_id.group(1)
+                    f = next((x for x in fires if str(x.get("name")) == fid), None)
+                    if not f:
+                        st.info(f"Fire {fid} not found.")
+                    else:
+                        lat, lon = _lat(f), _lon(f)
+                        st.markdown(f"**Location for fire {fid} — {date_label}:**")
+                        st.write(
+                            f"- {_prov(f)} · {_sizeha(f):,.1f} ha · {f.get('control','—')} · "
+                            f"coords: {lat:.4f}, {lon:.4f} · Started {_started_s(f) or '—'}"
+                        )
+                    return
+
+                # still 0.1 ha after N days
+                if "still 0.1" in text or ("0.1 ha" in text and ("after" in text or "older than" in text)):
+                    m = re.search(r'after\s+(\d+)\s+day', _num_from_words(text))
+                    n = int(m.group(1)) if m else 2
+                    cutoff = dt.date.today() - dt.timedelta(days=n)
+                    sf = [f for f in subset if abs(_sizeha(f) - 0.1) < 1e-6 and (_date_iso(_started_s(f)) or dt.date(1900,1,1)) <= cutoff]
+                    if not sf:
+                        st.info(f"No fires still 0.1 ha after {n} days.")
+                    else:
+                        st.markdown(f"**Matches — {date_label} ({len(sf)}):**")
+                        for f in sf: st.write(fmt_fire_line(f))
+                        st.caption(
+                            f"Total size: {sum(_sizeha(x) for x in sf):,.1f} ha · "
+                            f"Earliest start: {min((_date_iso(_started_s(x)) for x in sf if _date_iso(_started_s(x))), default='—')} · "
+                            f"Newest start: {max((_date_iso(_started_s(x)) for x in sf if _date_iso(_started_s(x))), default='—')}"
+                        )
+                    return
+
+                # GEO: within / closest / nearest
+                mode, amount, place = parse_geo(text)
+                if mode == "within" and place:
+                    fs, show_km, label = attach_distances(subset[:], place)
+                    if not show_km:
+                        st.info(f"Couldn’t locate “{place}”. Try including the province or postal code (e.g., 'Halifax NS' or 'B3H 1X1').")
+                        return
+                    fs = [f for f in fs if f.get("_dist_km") is not None and f["_dist_km"] <= float(amount or 40)]
+                    if not fs:
+                        st.info(f"No active fires within {float(amount or 40):.0f} km of {label}."); return
+                    st.markdown(f"**Matches within {float(amount or 40):.0f} km of {label} — {date_label} ({len(fs)}):**")
+                    for f in sorted(fs, key=lambda x: x.get("_dist_km") or 9e9): st.write(fmt_fire_line(f, show_km=True))
+                    st.caption(
+                        f"Total size: {sum(_sizeha(x) for x in fs):,.1f} ha · "
+                        f"Earliest start: {min((_date_iso(_started_s(x)) for x in fs if _date_iso(_started_s(x))), default='—')} · "
+                        f"Newest start: {max((_date_iso(_started_s(x)) for x in fs if _date_iso(_started_s(x))), default='—')}"
+                    )
+                    return
+
+                if mode == "closest" and place:
+                    fs, show_km, label = attach_distances(subset[:], place)
+                    if not show_km:
+                        st.info(f"Couldn’t locate “{place}”. Try “closest to Truro, NS”."); return
+                    k = int(amount or 1)
+                    fs = [f for f in fs if f.get("_dist_km") is not None]
+                    fs = sorted(fs, key=lambda x: x["_dist_km"])[:k]
+                    if not fs: st.info(f"No fires found near {label}."); return
+                    title = f"Closest to {label} — {date_label}" if k == 1 else f"Closest {k} to {label} — {date_label}"
+                    st.markdown(f"**{title}:**")
+                    for f in fs: st.write(fmt_fire_line(f, show_km=True))
+                    return
+
+                # if a time phrase was used, show the filtered list
+                if (d_from or d_to) and any(w in text for w in ["start","started","last","past","older","ago","week","day","days"]):
+                    if not subset:
+                        st.info("No matching fires.")
+                    else:
+                        st.markdown(f"**Matches — {date_label} ({len(subset)}):**")
+                        for f in subset: st.write(fmt_fire_line(f))
+                        st.caption(
+                            f"Total size: {sum(_sizeha(x) for x in subset):,.1f} ha · "
+                            f"Earliest start: {min((_date_iso(_started_s(x)) for x in subset if _date_iso(_started_s(x))), default='—')} · "
+                            f"Newest start: {max((_date_iso(_started_s(x)) for x in subset if _date_iso(_started_s(x))), default='—')}"
+                        )
+                    return
+
+                # province-only / control-only listings
+                if want_ctrl:
+                    if not subset: st.info("No matching fires."); return
+                    st.markdown(f"**{want_ctrl.title()} — {date_label} ({len(subset)}):**")
+                    for f in subset: st.write(fmt_fire_line(f))
+                    return
+
+                if want:
+                    if not subset: st.info("No matching fires."); return
+                    st.markdown(f"**Matches — {date_label} ({len(subset)}):**")
+                    for f in subset: st.write(fmt_fire_line(f))
+                    st.caption(
+                        f"Total size: {sum(_sizeha(x) for x in subset):,.1f} ha · "
+                        f"Earliest start: {min((_date_iso(_started_s(x)) for x in subset if _date_iso(_started_s(x))), default='—')} · "
+                        f"Newest start: {max((_date_iso(_started_s(x)) for x in subset if _date_iso(_started_s(x))), default='—')}"
+                    )
+                    return
+
+                # fallback snapshot
+                ongoing = int(raw.get("count_ongoing") or len(fires))
+                st.markdown(f"**Snapshot for {date_label}:** {ongoing} ongoing fire(s).")
                 st.write(
-                    f"- {_prov(f)} · {_sizeha(f):,.1f} ha · {f.get('control','—')} · "
-                    f"coords: {lat:.4f}, {lon:.4f} · Started {_started_s(f) or '—'}"
+                    "Try: *fires over 20 ha in NB* · *closest to Truro* · *within 40 km of Halifax* · "
+                    "*top 5 largest in NS* · *started last 7 days* · *older than 3 days* · *still 0.1 ha after 5 days*"
                 )
-            return
 
-        # --- still 0.1 ha after N days ---
-        if "still 0.1" in text or ("0.1 ha" in text and ("after" in text or "older than" in text)):
-            m = re.search(r'after\s+(\d+)\s+day', _num_from_words(text))
-            n = int(m.group(1)) if m else 2
-            cutoff = dt.date.today() - dt.timedelta(days=n)
-            sf = [f for f in subset if abs(_sizeha(f) - 0.1) < 1e-6 and (_date_iso(_started_s(f)) or dt.date(1900,1,1)) <= cutoff]
-            if not sf:
-                st.info(f"No fires still 0.1 ha after {n} days.")
-            else:
-                st.markdown(f"**Matches — {date_label} ({len(sf)}):**")
-                for f in sf: st.write(fmt_fire_line(f))
-                st.caption(
-                    f"Total size: {sum(_sizeha(x) for x in sf):,.1f} ha · "
-                    f"Earliest start: {min((_date_iso(_started_s(x)) for x in sf if _date_iso(_started_s(x))), default='—')} · "
-                    f"Newest start: {max((_date_iso(_started_s(x)) for x in sf if _date_iso(_started_s(x))), default='—')}"
-                )
-            return
+            except requests.HTTPError as e:
+                st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
+            except Exception as e:
+                st.warning(f"Couldn’t answer that right now ({e}).")
 
-        # --- GEO: within / closest / nearest ---
-        mode, amount, place = parse_geo(text)
-        if mode == "within" and place:
-            fs, show_km, label = attach_distances(subset[:], place)
-            if not show_km:
-                st.info(f"Couldn’t locate “{place}”. Try including the province or postal code (e.g., 'Halifax NS' or 'B3H 1X1').")
-                return
-            fs = [f for f in fs if f.get("_dist_km") is not None and f["_dist_km"] <= float(amount or 40)]
-            if not fs:
-                st.info(f"No active fires within {float(amount or 40):.0f} km of {label}."); return
-            st.markdown(f"**Matches within {float(amount or 40):.0f} km of {label} — {date_label} ({len(fs)}):**")
-            for f in sorted(fs, key=lambda x: x.get("_dist_km") or 9e9): st.write(fmt_fire_line(f, show_km=True))
-            st.caption(
-                f"Total size: {sum(_sizeha(x) for x in fs):,.1f} ha · "
-                f"Earliest start: {min((_date_iso(_started_s(x)) for x in fs if _date_iso(_started_s(x))), default='—')} · "
-                f"Newest start: {max((_date_iso(_started_s(x)) for x in fs if _date_iso(_started_s(x))), default='—')}"
-            )
-            return
+        if ask:
+            render_qna(q)
 
-        if mode == "closest" and place:
-            fs, show_km, label = attach_distances(subset[:], place)
-            if not show_km:
-                st.info(f"Couldn’t locate “{place}”. Try “closest to Truro, NS”."); return
-            k = int(amount or 1)
-            fs = [f for f in fs if f.get("_dist_km") is not None]
-            fs = sorted(fs, key=lambda x: x["_dist_km"])[:k]
-            if not fs: st.info(f"No fires found near {label}."); return
-            title = f"Closest to {label} — {date_label}" if k == 1 else f"Closest {k} to {label} — {date_label}"
-            st.markdown(f"**{title}:**")
-            for f in fs: st.write(fmt_fire_line(f, show_km=True))
-            return
+        # ---------------- SAFETY CHECK (single instance) ----------------
+        st.divider()
+        st.markdown("#### Safety check (40 km)")
 
-        # --- if a time window phrase was used, show the filtered list ---
-        if (d_from or d_to) and any(w in text for w in ["start","started","last","past","older","ago","week","day","days"]):
-            if not subset:
-                st.info("No matching fires.")
-            else:
-                st.markdown(f"**Matches — {date_label} ({len(subset)}):**")
-                for f in subset: st.write(fmt_fire_line(f))
-                st.caption(
-                    f"Total size: {sum(_sizeha(x) for x in subset):,.1f} ha · "
-                    f"Earliest start: {min((_date_iso(_started_s(x)) for x in subset if _date_iso(_started_s(x))), default='—')} · "
-                    f"Newest start: {max((_date_iso(_started_s(x)) for x in subset if _date_iso(_started_s(x))), default='—')}"
-                )
-            return
-
-        # --- province-only / control-only listings ---
-        if want_ctrl:
-            if not subset: st.info("No matching fires."); return
-            st.markdown(f"**{want_ctrl.title()} — {date_label} ({len(subset)}):**")
-            for f in subset: st.write(fmt_fire_line(f))
-            return
-
-        if want:
-            if not subset: st.info("No matching fires."); return
-            st.markdown(f"**Matches — {date_label} ({len(subset)}):**")
-            for f in subset: st.write(fmt_fire_line(f))
-            st.caption(
-                f"Total size: {sum(_sizeha(x) for x in subset):,.1f} ha · "
-                f"Earliest start: {min((_date_iso(_started_s(x)) for x in subset if _date_iso(_started_s(x))), default='—')} · "
-                f"Newest start: {max((_date_iso(_started_s(x)) for x in subset if _date_iso(_started_s(x))), default='—')}"
-            )
-            return
-
-        # --- fallback snapshot ---
-        ongoing = int(raw.get("count_ongoing") or len(fires))
-        st.markdown(f"**Snapshot for {date_label}:** {ongoing} ongoing fire(s).")
-        st.write(
-            "Try: *fires over 20 ha in NB* · *closest to Truro* · *within 40 km of Halifax* · "
-            "*top 5 largest in NS* · *started last 7 days* · *older than 3 days* · *still 0.1 ha after 5 days*"
+        RADIUS_KM = 40.0
+        loc_in = st.text_input(
+            "Your community or coordinates",
+            placeholder="e.g., Halifax NS  |  Moncton  |  44.65,-63.57  • Tip: include your postal code for best accuracy (e.g., B3H 1X1)",
+            key="safety_place",
         )
+        st.caption("Tip: For the most accurate location, include your postal code (e.g., 'B3H 1X1', 'E1C 1A1').")
 
-    except requests.HTTPError as e:
-        st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
-    except Exception as e:
-        st.warning(f"Couldn’t answer that right now ({e}).")
+        colA, colB = st.columns([1, 3])
+        check_btn = colA.button("Check 40 km", key="safety_check", disabled=not bool(fires_url))
+
+        def _parse_latlon(s: str):
+            try:
+                a, b = [t.strip() for t in (s or "").split(",")]
+                return float(a), float(b)
+            except Exception:
+                return None
+
+        def _guidance_block():
+            st.markdown(
+                """
+**If a wildfire is near you (≤40 km):**
+- **Call 911** if you see fire/smoke threatening people or property, or if told to evacuate.
+- **Contact your provincial forestry / wildfire line** to report details if safe to do so.
+- **Prepare a go-bag** for each person: ID, meds/prescriptions, phone/chargers, cash, water & snacks, clothing, sturdy shoes, flashlight, important docs (USB/photo), pet supplies, masks (N95), eyeglasses.
+- **Get ready to leave quickly:** keep your vehicle fueled, park facing the road, know **two ways out**, share plans with family.
+- **Harden your home (only if safe):** close windows/vents, remove flammables from deck, wet vegetation, keep hoses ready.
+- **Activate the SAFER fire alert for critical proximity alerts.**
+                """
+            )
+
+        if check_btn:
+            try:
+                raw = st.session_state.get("fires_payload") or post_json(
+                    fires_url, {"from": "safety"}, shared_secret or None, timeout=timeout_sec
+                )
+                fires = raw.get("fires") or []
+                if not loc_in.strip():
+                    st.info("Enter a community or coordinates first.")
+                else:
+                    anchor = None
+                    ll = _parse_latlon(loc_in)
+                    if ll:
+                        anchor = (ll[0], ll[1], f"{ll[0]:.4f}, {ll[1]:.4f}")
+                    else:
+                        g = geocode_place(loc_in)
+                        if g: anchor = (float(g[0]), float(g[1]), g[2])
+
+                    if not anchor:
+                        st.info("Couldn't locate that place. Try including the province or your postal code, e.g., 'Halifax B3H 1X1'.")
+                    else:
+                        lat0, lon0, place_lbl = anchor
+                        cands = [f for f in fires if _lat(f) is not None and _lon(f) is not None]
+                        for f in cands:
+                            f["_dist_km"] = haversine_km(lat0, lon0, _lat(f), _lon(f))
+                        nearby = [f for f in cands if f["_dist_km"] <= RADIUS_KM]
+                        nearby.sort(key=lambda x: x["_dist_km"])
+
+                        if nearby:
+                            st.error(f"⚠️ {len(nearby)} active fire(s) within {RADIUS_KM:.0f} km of {place_lbl}")
+                            for f in nearby:
+                                st.write(
+                                    f"- {f.get('name')} — {_prov(f)} · {_sizeha(f):,.1f} ha · {f.get('control','—')} · "
+                                    f"{f['_dist_km']:.1f} km away · Started {_started_s(f) or '—'}"
+                                )
+                            _guidance_block()
+                        else:
+                            st.success(f"No active fires within {RADIUS_KM:.0f} km of {place_lbl} right now.")
+                            with st.expander("Be prepared anyway (quick tips)"):
+                                _guidance_block()
+            except requests.HTTPError as e:
+                st.error(f"HTTP error: {e.response.status_code} {e.response.text[:300]}")
+            except Exception as e:
+                st.error(f"Check failed: {e}")
 
     if ask:
         render_qna(q)
