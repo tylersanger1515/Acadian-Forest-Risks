@@ -761,6 +761,79 @@ with t2:
                         pickable=False,
                     )
                     st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view))
+                    
+# --- Nearest places (Google Places)
+# Uses your existing `google_key` secret and top-level imports (requests, math).
+
+def _places_nearby(lat, lon, radius_m, api_key, types=("locality","sublocality","neighborhood")):
+    """Google Places Nearby Search for fine-grained towns/communities."""
+    url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+    out, seen = [], set()
+    for t in types:
+        params = {"location": f"{lat},{lon}", "radius": int(radius_m), "type": t, "key": api_key}
+        r = requests.get(url, params=params, timeout=20); r.raise_for_status()
+        for it in (r.json() or {}).get("results", []):
+            pid = it.get("place_id")
+            if not pid or pid in seen: 
+                continue
+            seen.add(pid)
+            loc = (it.get("geometry") or {}).get("location") or {}
+            plat, plon = float(loc.get("lat", 0)), float(loc.get("lng", 0))
+            # haversine distance (km) from incident point
+            R = 6371.0; p = math.pi/180.0
+            dlat = (plat - float(lat)) * p
+            dlon = (plon - float(lon)) * p
+            a = math.sin(dlat/2)**2 + math.cos(float(lat)*p)*math.cos(plat*p)*math.sin(dlon/2)**2
+            dist_km = 2 * R * math.asin(math.sqrt(a))
+            out.append({
+                "name": it.get("name") or "(unnamed)",
+                "types": it.get("types") or [],
+                "lat": plat, "lon": plon,
+                "distance_km": round(dist_km, 2),
+            })
+    out.sort(key=lambda x: x["distance_km"])
+    return out
+
+st.divider()
+st.markdown("**Nearest places (Google)**")
+
+if not google_key:
+    st.info("Add GOOGLE_GEOCODING_API_KEY in App → Settings → Secrets to enable this.")
+elif "lat" not in incident or "lon" not in incident:
+    st.caption("No coordinates for this incident.")
+else:
+    c1, c2 = st.columns([2, 2])
+    with c1:
+        # Pick any radii you want (1, 20, 30, 40…)
+        radius_choices = st.multiselect(
+            "Show closest within (km)",
+            options=[1, 5, 10, 20, 30, 40, 80],
+            default=[20, 40],
+        )
+    with c2:
+        type_choices = st.multiselect(
+            "Place types",
+            options=["locality", "sublocality", "neighborhood", "point_of_interest", "establishment"],
+            default=["locality", "sublocality", "neighborhood"],
+        )
+
+    if st.button("Find nearest places"):
+        lat_i, lon_i = float(incident["lat"]), float(incident["lon"])
+        max_r = (max(radius_choices) if radius_choices else 40) * 1000  # meters
+        places = _places_nearby(lat_i, lon_i, max_r, google_key, tuple(type_choices))
+
+        if not places:
+            st.info("No places returned by Google for these settings.")
+        else:
+            for R in sorted(radius_choices):
+                subset = [p for p in places if p["distance_km"] <= float(R)]
+                st.markdown(f"**≤ {R} km** — {len(subset)} place(s)")
+                if subset:
+                    for p in subset[:12]:
+                        t = ", ".join(p.get("types", [])[:3])
+                        st.write(f"- {p['name']} — {p['distance_km']:.2f} km" + (f" · _{t}_" if t else ""))
+                else:
+                    st.caption("none")
 
                 # --- Quick links / details
                 c1, c2 = st.columns(2)
