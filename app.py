@@ -203,27 +203,34 @@ with t1:
     with right:
         st.markdown("#### Ask about today’s fires")
 
-        # example dropdown (5 unique)
-        examples = [
-            "which fires are out of control?",
-            "top 4 largest in NB",
-            "fires within 40 km of Halifax",
-            "what place is closest to fire 68586?",
-            "when did fire 68622 start?",
-        ]
-        ex_choice = st.selectbox("Examples", options=examples, index=0, key="q_examples")
-        q = st.text_input(
-            "Your question",
-            value="",
-            placeholder=("e.g., fires near Halifax • within 40 km of Truro • closest to Moncton • "
-                         "top 4 largest in NB • totals by province • where is fire 68622 • "
-                         "how far is fire 68622 from Halifax • started last 7 days • older than 3 days"),
+       # example dropdown (5 unique)
+examples = [
+    "which fires are out of control?",
+    "top 4 largest in NB",
+    "fires within 40 km of Halifax",
+    "what place is closest to fire 68586?",
+    "when did fire 68622 start?",
+]
+
+# Let the user pick an example (do NOT write into q_fires here)
+st.selectbox("Examples", options=examples, index=0, key="examples_q")
+
+# Safe callback that copies the selection into the text input
+def _copy_example_to_input():
+    st.session_state["q_fires"] = st.session_state.get("examples_q", "")
+
+st.button("Use example", key="use_example", on_click=_copy_example_to_input)
+
+# The actual question box (binds to q_fires)
+q = st.text_input(
+    "Your question",
+    key="q_fires",
+    placeholder=("e.g., fires near Halifax • within 40 km of Truro • closest to Moncton • "
+                 "top 4 largest in NB • totals by province • where is fire 68622 • "
+                 "how far is fire 68622 from Halifax • started last 7 days • older than 3 days"),
+)
             key="q_fires",
         )
-        use_ex = st.button("Use example", key="use_example")
-        if use_ex:
-            st.session_state["q_fires"] = ex_choice
-            q = ex_choice
 
         ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
 
