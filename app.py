@@ -262,7 +262,11 @@ with t1:
                 )
                 html = data.get("summary_html")
                 if isinstance(html, str) and html.strip():
-                    components.html(html, height=820, scrolling=True)
+                    # cache & rerun so we render in one place below
+                    ss["fires_payload"] = data
+                    ss["fires_html"] = html
+                    st.success("Received response from n8n")
+                    st.rerun()
                 else:
                     st.write(
                         data.get("summary") or data.get("summary_text") or "(No summary returned)"
@@ -276,7 +280,7 @@ with t1:
                 st.error(f"Failed: {e}")
 
         if ss.get("fires_html"):
-            components.html(ss["fires_html"], height=820, scrolling=True)
+            components.html(ss["fires_html"], height=1200, scrolling=True)
 
     # ---------------- RIGHT: Q&A ----------------
     with right:
@@ -577,7 +581,7 @@ with t1:
                     radius_min_pixels=4,
                     radius_max_pixels=30,
                 )
-                st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view))
+                st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view), use_container_width=True)
                 return
 
             # how far is fire <id> from <place>
@@ -700,8 +704,6 @@ with t1:
                                     f"{float(f.get('size_ha') or 0.0):,.1f} ha · {f.get('control','—')} · "
                                     f"{f['_dist_km']:.1f} km away · Started {str(f.get('started') or '')[:10] or '—'}"
                                 )
-                            with st.expander("Safety guidance"):
-                                _guidance_block()
                         else:
                             st.success(f"No active fires within {RADIUS_KM:.0f} km of {place_lbl}.")
             except Exception as e:
@@ -797,7 +799,7 @@ with t2:
                     radius_max_pixels=60,
                     pickable=False,
                 )
-                st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view))
+                st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view), use_container_width=True)
 
                 # --- Nearest places (Google Places) ---
                 def _places_nearby(
