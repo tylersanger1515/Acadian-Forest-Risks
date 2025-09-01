@@ -29,6 +29,7 @@ def _get_secret(name: str, default: str | None = None) -> str | None:
 def load_config() -> Dict[str, Any]:
     return {
         "FIRE_URL": _get_secret("N8N_FIRES_URL", ""),
+        "AGENT_URL": _get_secret("N8N_AGENT_URL", ""),
         "RISK_URL": _get_secret("N8N_RISK_URL", ""),
         "SUBSCRIBE_URL": _get_secret("N8N_SUBSCRIBE_URL", ""),
         "SHARED_SECRET": _get_secret("N8N_SHARED_SECRET", ""),
@@ -40,6 +41,7 @@ def load_config() -> Dict[str, Any]:
 
 cfg = load_config()
 fires_url = cfg["FIRE_URL"]
+agent_url = cfg["AGENT_URL"]
 risk_url = cfg["RISK_URL"]
 subscribe_url = cfg["SUBSCRIBE_URL"]
 shared_secret = cfg["SHARED_SECRET"]
@@ -669,13 +671,41 @@ with t1:
             st.write("Try one of the example questions above. Here's a quick count by province:")
             st.json(by_p)
 
-        if ask:
-            try:
-                answer_fire_question(q)
-            except requests.HTTPError as e:
-                st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
-            except Exception as e:
-                st.error(f"Failed to answer: {e}")
+        agent_url = _get_secret("N8N_AGENT_URL", "")  # new secret for the AI Agent webhook
+
+if ask:
+    try:
+        if agent_url:
+            # Send the user’s text to the agent
+            res = post_json(agent_url, {"q": q}, shared_secret or None, timeout=timeout_sec)
+            md = res.get("answer_md") or "_No answer_"
+            st.markdown(md)
+
+            # If agent returns map markers, plot them
+            marks = res.get("markers") or []
+            if marks:
+                view = pdk.ViewState(latitude=float(marks[0]["lat"]),
+                                     longitude=float(marks[0]["lon"]),
+                                     zoom=6)
+                layer = pdk.Layer(
+                    "ScatterplotLayer",
+                    data=[{"lat": m["lat"], "lon": m["lon"], "name": m["label"]} for m in marks],
+                    get_position=["lon", "lat"],
+                    get_radius=1200,
+                    radius_min_pixels=4,
+                    radius_max_pixels=30,
+                    pickable=True,
+                )
+                st.pydeck_chart(pdk.Deck(layers=[layer],
+                                         initial_view_state=view,
+                                         tooltip={"text": "{name}"}))
+        else:
+            # fallback to the old local parser
+            answer_fire_question(q)
+    except requests.HTTPError as e:
+        st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
+    except Exception as e:
+        st.error(f"Failed to answer: {e}")
 
         st.divider()
         st.markdown("#### Safety check (40 km)")
