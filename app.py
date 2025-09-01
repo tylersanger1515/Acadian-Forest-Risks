@@ -159,7 +159,14 @@ def _opencage_geocode(address: str, api_key: str) -> Optional[Dict[str, Any]]:
     if not api_key or not address.strip():
         return None
     url = "https://api.opencagedata.com/geocode/v1/json"
-    params = {"q": address.strip(), "key": api_key, "limit": 1, "countrycode": "ca", "no_annotations": 1, "pretty": 0}
+    params = {
+        "q": address.strip(),
+        "key": api_key,
+        "limit": 1,
+        "countrycode": "ca",
+        "no_annotations": 1,
+        "pretty": 0,
+    }
     b = pick_bounds_from_address(address)
     if b:
         params["bounds"] = f"{b['west']},{b['south']}|{b['east']},{b['north']}"
@@ -224,6 +231,17 @@ def haversine_km(lat1, lon1, lat2, lon2) -> Optional[float]:
     return R * 2 * math.asin(math.sqrt(a))
 
 
+def _status_to_color(ctrl: Optional[str]) -> List[int]:
+    s = (ctrl or "").lower()
+    if "out" in s:  # out of control
+        return [220, 38, 38]  # red
+    if "held" in s:
+        return [234, 179, 8]  # yellow
+    if "under" in s:  # under control
+        return [16, 185, 129]  # green
+    return [107, 114, 128]  # gray
+
+
 def _guidance_block():
     st.markdown(
         """
@@ -238,18 +256,7 @@ def _guidance_block():
     )
 
 
-def _status_to_color(ctrl: Optional[str]) -> List[int]:
-    s = (ctrl or "").lower()
-    if "out" in s:
-        return [220, 38, 38]  # red
-    if "held" in s:
-        return [234, 179, 8]  # yellow
-    if "under" in s:
-        return [16, 185, 129]  # green
-    return [107, 114, 128]  # gray
-
-
-# ---------- TABS ----------
+# ---------- UI TABS ----------
 t1, t2, t3 = st.tabs(["🔥 Active Fires", "🧾 Incident Brief", "🚨 SAFER Fire Alert"])
 
 # ===== TAB 1: ACTIVE FIRES =====
@@ -262,30 +269,88 @@ with t1:
 
     left, right = st.columns([1, 1])
 
-    # ---------------- LEFT: summary table ----------------
+    # ---------------- LEFT: summary + map ----------------
     with left:
         if st.button("Fetch Active Fires", type="primary", disabled=not bool(fires_url)):
             try:
                 data = post_json(fires_url, {"from": "streamlit"}, shared_secret or None, timeout=timeout_sec)
                 html = data.get("summary_html")
+                ss["fires_payload"], ss["fires_html"] = data, html
                 if isinstance(html, str) and html.strip():
-                    ss["fires_payload"], ss["fires_html"] = data, html
-                    st.success("Received response from n8n")
-                    st.rerun()
+                    components.html(html, height=820, scrolling=True)
                 else:
                     st.write(data.get("summary") or data.get("summary_text") or "(No summary returned)")
+                st.success("Received response from n8n")
             except requests.HTTPError as e:
                 st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
             except Exception as e:
                 st.error(f"Failed: {e}")
 
         if ss.get("fires_html"):
-            components.html(ss["fires_html"], height=1200, scrolling=True)
+            components.html(ss["fires_html"], height=820, scrolling=True)
+
+        st.divider()
+        st.markdown("**Map of active fires (colored pins)**")
+        # Build map data from payload if present
+        fires_list: List[Dict[str, Any]] = []
+        payload = ss.get("fires_payload") or {}
+        if isinstance(payload, dict):
+            if isinstance(payload.get("fires"), list):
+                fires_list = payload["fires"]
+            elif isinstance(payload.get("items"), list):
+                fires_list = payload["items"]
+        # Normalize & filter for mappable points
+        map_rows = []
+        for f in fires_list or []:
+            try:
+                lat = float(f.get("lat"))
+                lon = float(f.get("lon"))
+            except Exception:
+                continue
+            ctrl = f.get("control") or f.get("status") or ""
+            color = _status_to_color(ctrl)
+            size_ha = f.get("size_ha")
+            try:
+                size_ha = float(size_ha) if size_ha is not None else None
+            except Exception:
+                size_ha = None
+            map_rows.append({
+                "lat": lat,
+                "lon": lon,
+                "name": f.get("name") or f.get("id") or "(id?)",
+                "control": ctrl,
+                "size_ha": size_ha if size_ha is not None else "—",
+                "color": color,
+            })
+        if map_rows:
+            center_lat = sum(r["lat"] for r in map_rows) / len(map_rows)
+            center_lon = sum(r["lon"] for r in map_rows) / len(map_rows)
+            view = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=5.8)
+            layer = pdk.Layer(
+                "ScatterplotLayer",
+                data=map_rows,
+                get_position=["lon", "lat"],
+                get_fill_color="color",
+                get_radius=1600,
+                radius_min_pixels=4,
+                radius_max_pixels=40,
+                pickable=True,
+            )
+            deck = pdk.Deck(
+                layers=[layer],
+                initial_view_state=view,
+                tooltip={"text": "{name}\n{control}\n{size_ha} ha"},
+            )
+            st.pydeck_chart(deck)
+            st.caption("Legend: 🔴 Out of Control · 🟡 Being Held · 🟢 Under Control · ⚪ Unknown")
+        else:
+            st.caption("Fetch fires to populate the map.")
 
     # ---------------- RIGHT: Q&A ----------------
     with right:
         st.markdown("#### Ask about today’s fires")
 
+        # Helpers for fires list
         def _prov(f: Dict[str, Any]) -> str:
             return (f.get("agency") or "").strip().upper()
 
@@ -314,6 +379,7 @@ with t1:
             base += f" · Started {_started_s(f) or '—'}"
             return base
 
+        # numbers in words → ints
         _NUM_WORDS = {
             "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
             "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
@@ -324,15 +390,15 @@ with t1:
         def _num_from_words(t: str) -> str:
             return re.sub(r"\b(" + "|".join(_NUM_WORDS.keys()) + r")\b", lambda m: str(_NUM_WORDS[m.group(1)]), t or "")
 
+        # size phrases
         def parse_size_range(text: str):
             t = (text or "").lower()
             nums = [float(x) for x in re.findall(r"(\d+(?:\.\d+)?)\s*(?:ha)?", t)]
             if "between" in t and "and" in t and len(nums) >= 2:
-                a, b = sorted(nums[:2])
-                return ("between", a, b)
-            if any(w in t for w in ["over", "more than", ">", ">=", "at least", "minimum", "greater than", "bigger than", "larger than", "above"]):
+                a, b = sorted(nums[:2]); return ("between", a, b)
+            if any(w in t for w in ["over","more than",">=",">","at least","minimum","greater than","bigger than","larger than","above"]):
                 return ("min", nums[0]) if nums else None
-            if any(w in t for w in ["under", "less than", "<", "<=", "at most", "maximum", "below", "smaller than", "lesser than"]):
+            if any(w in t for w in ["under","less than","<=","<","at most","maximum","below","smaller than","lesser than"]):
                 return ("max", nums[0]) if nums else None
             m = re.search(r"([<>]=?)\s*(\d+(?:\.\d+)?)\s*(?:ha)?", t)
             if m:
@@ -340,16 +406,79 @@ with t1:
                 return ("min", val) if op.startswith(">") else ("max", val)
             return None
 
+        # date windows
+        def parse_days_window(text: str):
+            s2 = _num_from_words((text or "").lower())
+            today = dt.date.today()
+            m = re.search(r"started\s+last\s+(\d+)\s+day", s2)
+            if m:
+                d = int(m.group(1)); cutoff = today - dt.timedelta(days=d)
+                return ("recent", cutoff)
+            m = re.search(r"older\s+than\s+(\d+)\s+day", s2)
+            if m:
+                d = int(m.group(1)); cutoff = today - dt.timedelta(days=d)
+                return ("older", cutoff)
+            return (None, None)
+
+        # GEO intent parsing
+        def parse_geo(text: str):
+            t = (text or "").lower().strip()
+            m = re.search(r"within\s+(\d+(?:\.\d+)?)\s*km\s+(?:of|from)\s+(.+)", t)
+            if m: return ("within", float(m.group(1)), m.group(2).strip())
+            m = re.search(r"(?:top\s+(\d+)\s+)?(?:closest|nearest)(?:\s+fire)?\s+(?:to|near)\s+(.+)", t)
+            if m: return ("closest", int(m.group(1) or 1), m.group(2).strip())
+            m = re.search(r"(?:near|nearby|close to)\s+(.+)", t)
+            if m: return ("within", 40.0, m.group(1).strip())
+            return (None, None, None)
+
+        def geocode_place(name: str) -> Optional[Tuple[float, float, str]]:
+            qtext = (name or "").strip()
+            if not qtext:
+                return None
+            # allow direct lat,lon
+            ll = _parse_latlon(qtext)
+            if ll:
+                return float(ll[0]), float(ll[1]), f"{ll[0]:.4f}, {ll[1]:.4f}"
+            # scrub phrases like "within 40 km"
+            qtext = re.sub(r"\bwithin\s+\d+(?:\.\d+)?\s*km\b", "", qtext, flags=re.I).strip(",.;: ")
+            try:
+                g = geocode_address(qtext, opencage_key, google_key)
+                if g:
+                    return float(g[0]), float(g[1]), g[2]
+            except Exception:
+                return None
+            return None
+
+        # province filter
+        def _maybe_filter_province(fires: List[Dict[str, Any]], ql: str) -> List[Dict[str, Any]]:
+            if any(w in ql for w in [" in nb", " in new brunswick"]):
+                return [f for f in fires if _prov(f) == "NB"]
+            if any(w in ql for w in [" in ns", " in nova scotia"]):
+                return [f for f in fires if _prov(f) == "NS"]
+            if any(w in ql for w in [" in pe", " in pei", " in prince edward"]):
+                return [f for f in fires if _prov(f) == "PE"]
+            if any(w in ql for w in [" in nl", " in newfoundland", " in labrador"]):
+                return [f for f in fires if _prov(f) == "NL"]
+            return fires
+
+        def _find_fire_by_id(fires: List[Dict[str, Any]], fid: str) -> Optional[Dict[str, Any]]:
+            fid = re.sub(r"\D", "", str(fid or ""))
+            return next((x for x in fires if str(x.get("name")) == fid or str(x.get("id")) == fid), None)
+
+        # UI: examples
         examples = [
             "which fires are out of control?",
             "top 4 largest in NB",
             "fires within 40 km of Halifax",
             "what place is closest to fire 68586?",
             "when did fire 68622 start?",
+            "largest fire in NS",
+            "fires older than 3 days",
+            "fires between 100 and 500 ha in NL",
         ]
-        st.selectbox("Examples", options=examples, index=0, key="examples_q")
-        st.button("Use example", key="use_example", on_click=lambda: st.session_state.update({"q_fires": st.session_state.get("examples_q", "")}))
-
+        ex_sel = st.selectbox("Examples", options=examples, index=0, key="examples_q")
+        if st.button("Use example", key="use_example"):
+            st.session_state["q_fires"] = ex_sel
         q = st.text_input(
             "Your question",
             key="q_fires",
@@ -359,55 +488,32 @@ with t1:
                 "how far is fire 68622 from Halifax • started last 7 days • older than 3 days"
             ),
         )
-
         ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
 
-        def _ensure_fires() -> List[Dict[str, Any]]:
-            raw = ss.get("fires_payload")
-            if not raw:
-                raw = post_json(fires_url, {"from": "qa"}, shared_secret or None, timeout=timeout_sec)
-                ss["fires_payload"] = raw
-            return raw.get("fires") or []
-
-        def _geo_place(place: str) -> Optional[Tuple[float, float, str]]:
-            g = geocode_address(place, opencage_key, google_key)
-            if not g:
-                return None
-            return float(g[0]), float(g[1]), g[2]
-
-        def _find_fire_by_id(fires: List[Dict[str, Any]], fid: str) -> Optional[Dict[str, Any]]:
-            fid = fid.strip()
-            for f in fires:
-                if str(f.get("id") or f.get("name") or "").strip() == fid:
-                    return f
-            for f in fires:
-                if fid in str(f.get("name") or ""):
-                    return f
-            return None
-
-        def _maybe_filter_province(fires: List[Dict[str, Any]], ql: str) -> List[Dict[str, Any]]:
-            prov_map = {"NB": ["nb", "new brunswick"], "NS": ["ns", "nova scotia"], "PE": ["pe", "pei", "prince edward"], "NL": ["nl", "newfoundland", "labrador"]}
-            for code, keys in prov_map.items():
-                if any(k in ql for k in keys):
-                    return [f for f in fires if _prov(f) == code]
-            return fires
+        # Retrieve fires list from payload when needed
+        def _get_fires_from_payload() -> List[Dict[str, Any]]:
+            payload = st.session_state.get("fires_payload") or {}
+            fires = []
+            if isinstance(payload, dict):
+                if isinstance(payload.get("fires"), list):
+                    fires = payload["fires"]
+                elif isinstance(payload.get("items"), list):
+                    fires = payload["items"]
+            return [f for f in fires if isinstance(f, dict)]
 
         def answer_fire_question(q: str):
-            if not q.strip():
-                st.info("Type a question first.")
-                return
-            fires = _ensure_fires()
+            fires = _get_fires_from_payload()
             if not fires:
-                st.warning("No fire data returned.")
+                st.info("Fetch Active Fires first.")
                 return
 
-            qn = _num_from_words(q).strip()
+            qn = _num_from_words(q or "").strip()
             ql = qn.lower()
-            out: List[Dict[str, Any]] = []
 
             fires2 = _maybe_filter_province(fires, ql)
 
-            if "out of control" in ql or "out-of-control" in ql or "uncontrolled" in ql:
+            # 1) status filters
+            if any(k in ql for k in ["out of control", "out-of-control", "uncontrolled"]):
                 out = [f for f in fires2 if "out" in _ctrl_text(f)]
                 if not out:
                     st.write("No out-of-control fires found in the selection.")
@@ -417,17 +523,20 @@ with t1:
                     st.markdown(fmt_fire_line(f))
                 return
 
+            # 2) top N largest
             m_top = re.search(r"top\s+(\d+)", ql)
             if m_top:
-                n = int(m_top.group(1))
+                n = max(1, int(m_top.group(1)))
                 fires2.sort(key=lambda f: -_sizeha(f))
-                for f in fires2[: max(1, n)]:
+                for f in fires2[: n]:
                     st.markdown(fmt_fire_line(f))
                 return
 
+            # 3) size range
             rng = parse_size_range(ql)
             if rng:
                 kind = rng[0]
+                out: List[Dict[str, Any]] = []
                 if kind == "between":
                     a, b = rng[1], rng[2]
                     out = [f for f in fires2 if a <= _sizeha(f) <= b]
@@ -445,34 +554,25 @@ with t1:
                         st.markdown(fmt_fire_line(f))
                 return
 
-            m_last = re.search(r"started\s+last\s+(\d+)\s+day", ql)
-            m_old = re.search(r"older\s+than\s+(\d+)\s+day", ql)
-            today = dt.date.today()
-            if m_last:
-                d = int(m_last.group(1))
-                cutoff = today - dt.timedelta(days=d)
-                out = [f for f in fires2 if (_date_iso(_started_s(f)) or today) >= cutoff]
+            # 4) recency
+            kind, cutoff = parse_days_window(ql)
+            if kind == "recent":
+                out = [f for f in fires2 if (_date_iso(_started_s(f)) or dt.date.today()) >= cutoff]
                 for f in out:
                     st.markdown(fmt_fire_line(f))
                 return
-            if m_old:
-                d = int(m_old.group(1))
-                cutoff = today - dt.timedelta(days=d)
-                out = [f for f in fires2 if (_date_iso(_started_s(f)) or today) < cutoff]
+            if kind == "older":
+                out = [f for f in fires2 if (_date_iso(_started_s(f)) or dt.date.today()) < cutoff]
                 for f in out:
                     st.markdown(fmt_fire_line(f))
                 return
 
-            m_within = re.search(r"within\s+(\d+)\s*km\s+of\s+(.+)$", ql)
-            m_close = re.search(r"closest\s+to\s+(.+)$", ql)
-            if m_within or m_close:
-                if m_within:
-                    R_km = float(m_within.group(1))
-                    place = m_within.group(2).strip()
-                else:
-                    R_km = float("inf")
-                    place = m_close.group(1).strip()
-                g = _geo_place(place)
+            # 5) geo — within X km of PLACE / closest to PLACE
+            g_kind, g_a, g_b = parse_geo(ql)
+            if g_kind in ("within", "closest"):
+                R_km = float(g_a) if g_kind == "within" else float("inf")
+                place = g_b
+                g = geocode_place(place)
                 if not g:
                     st.warning("Could not geocode that place. Try adding province/postal code.")
                     return
@@ -491,22 +591,81 @@ with t1:
                         f2["_dist_km"] = dkm
                         cands.append(f2)
                 cands.sort(key=lambda x: x.get("_dist_km", 9e9))
-                if not cands:
+                if not cands and g_kind == "within":
                     st.write(f"No active fires within {R_km:.0f} km of {label}.")
+                    return
+                if not cands and g_kind == "closest":
+                    st.write(f"No active fires found to compute closeness for {label}.")
                     return
                 st.write(f"Closest fires to **{label}**:")
                 for f in cands[:20]:
                     st.markdown(fmt_fire_line(f, show_km=True))
+                # simple map for this subset
                 view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=7)
-                plot_data = [{"lat": f.get("lat"), "lon": f.get("lon"), "color": _status_to_color(f.get("control"))} for f in cands[:200]]
-                layer = pdk.Layer("ScatterplotLayer", data=plot_data, get_position=["lon", "lat"], get_fill_color="color", get_radius=1500, radius_min_pixels=4, radius_max_pixels=32)
-                st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view), use_container_width=True)
-                st.caption("Legend: 🔴 Out of Control · 🟡 Being Held · 🟢 Under Control")
+                subset_rows = []
+                for f in cands[:200]:
+                    try:
+                        subset_rows.append({
+                            "lat": float(f.get("lat")),
+                            "lon": float(f.get("lon")),
+                            "name": f.get("name") or f.get("id") or "(id?)",
+                            "color": _status_to_color(f.get("control") or f.get("status")),
+                        })
+                    except Exception:
+                        pass
+                if subset_rows:
+                    layer = pdk.Layer(
+                        "ScatterplotLayer",
+                        data=subset_rows,
+                        get_position=["lon", "lat"],
+                        get_fill_color="color",
+                        get_radius=1200,
+                        radius_min_pixels=4,
+                        radius_max_pixels=30,
+                    )
+                    st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view, tooltip={"text": "{name}"}))
                 return
 
+            # 6) how far is fire <id> from <place>
+            m_howfar = re.search(r"how\s+far\s+(?:is\s+)?(?:fire\s+)?(\d{3,6})\s+(?:from|to)\s+(.+)", ql)
+            if m_howfar:
+                fid, place = m_howfar.group(1), m_howfar.group(2).strip()
+                f = _find_fire_by_id(fires2, fid)
+                if not f:
+                    st.write("Couldn't find that fire.")
+                    return
+                g = geocode_place(place)
+                if not g:
+                    st.write("Couldn't geocode that place.")
+                    return
+                lat0, lon0, label = g
+                try:
+                    dkm = haversine_km(lat0, lon0, float(f.get("lat")), float(f.get("lon")))
+                except Exception:
+                    dkm = None
+                st.write(
+                    f"Fire {fid} is {dkm:.1f} km from {label}." if dkm is not None else "Distance unavailable."
+                )
+                st.markdown(fmt_fire_line(f))
+                return
+
+            # 7) when did fire <id> start
+            m_start = re.search(r"(?:when\s+did\s*(?:fire\s*)?([0-9\-\s]+)\s*start|start\s*date\s*for\s*([0-9\-\s]+))", ql)
+            if m_start:
+                fid = re.sub(r"\D", "", (m_start.group(1) or m_start.group(2) or ""))
+                f = _find_fire_by_id(fires2, fid)
+                if not f:
+                    st.write(f"Fire {fid} not found.")
+                else:
+                    st.markdown(f"**Start date for fire {fid}: {_started_s(f) or '—'}**")
+                    st.write(fmt_fire_line(f))
+                return
+
+            # fallback — counts by province
             by_p: Dict[str, int] = {}
             for f in fires2:
-                by_p[_prov(f) or "—"] = by_p.get(_prov(f) or "—", 0) + 1
+                by_p.setdefault(_prov(f) or "—", 0)
+                by_p[_prov(f) or "—"] += 1
             st.write("Try one of the example questions above. Here's a quick count by province:")
             st.json(by_p)
 
@@ -520,67 +679,59 @@ with t1:
 
         st.divider()
         st.markdown("#### Safety check (40 km)")
-        loc_in = st.text_input("Your community or coordinates", key="safety_place", placeholder="e.g., Halifax NS  |  Moncton  |  44.65,-63.57")
-        check_btn = st.button("Check 40 km", key="safety_check", disabled=not bool(fires_url))
-        if check_btn:
-            try:
-                raw = ss.get("fires_payload") or post_json(fires_url, {"from": "safety"}, shared_secret or None, timeout=timeout_sec)
-                fires = raw.get("fires") or []
-                if not loc_in.strip():
-                    st.info("Enter a community or coordinates first.")
+        loc_in = st.text_input(
+            "Your community or coordinates",
+            placeholder=(
+                "e.g. Halifax NS  |  Moncton  |  44.65,-63.57  • Tip: include your postal code for best accuracy (e.g. B3H 1X1)"
+            ),
+            key="safety_place",
+        )
+        if st.button("Check proximity", disabled=not bool(ss.get("fires_payload"))):
+            fires = _get_fires_from_payload()
+            g = None
+            if _parse_latlon(loc_in or ""):
+                lat, lon = _parse_latlon(loc_in)
+                g = (float(lat), float(lon), f"{lat:.4f}, {lon:.4f}")
+            elif (loc_in or "").strip():
+                gg = geocode_address(loc_in, opencage_key, google_key)
+                if gg:
+                    g = (float(gg[0]), float(gg[1]), gg[2])
+            if not g:
+                st.warning("Couldn't locate that place.")
+            else:
+                lat0, lon0, label = g
+                near = []
+                for f in fires:
+                    try:
+                        dkm = haversine_km(lat0, lon0, float(f.get("lat")), float(f.get("lon")))
+                        if dkm is not None and dkm <= 40.0:
+                            f2 = dict(f); f2["_dist_km"] = dkm; near.append(f2)
+                    except Exception:
+                        pass
+                if not near:
+                    st.success(f"No active fires within 40 km of {label}.")
                 else:
-                    anchor: Optional[Tuple[float, float, str]] = None
-                    ll = _parse_latlon(loc_in)
-                    if ll:
-                        anchor = (ll[0], ll[1], f"{ll[0]:.4f}, {ll[1]:.4f}")
-                    else:
-                        g = geocode_address(loc_in, opencage_key, google_key)
-                        if g:
-                            anchor = (float(g[0]), float(g[1]), g[2])
-                    if not anchor:
-                        st.info("Couldn't locate that place. Try including province or postal code.")
-                    else:
-                        lat0, lon0, place_lbl = anchor
-                        cands: List[Dict[str, Any]] = []
-                        for f in fires:
-                            try:
-                                lat, lon = float(f.get("lat")), float(f.get("lon"))
-                            except Exception:
-                                continue
-                            dkm = haversine_km(lat0, lon0, lat, lon)
-                            if dkm is None:
-                                continue
-                            f2 = dict(f)
-                            f2["_dist_km"] = dkm
-                            cands.append(f2)
-                        nearby = [f for f in cands if f.get("_dist_km") is not None and f["_dist_km"] <= 40.0]
-                        nearby.sort(key=lambda x: x.get("_dist_km") if x.get("_dist_km") is not None else 9e9)
-                        if nearby:
-                            st.error(f"⚠️ {len(nearby)} active fire(s) within 40 km of {place_lbl}")
-                            for f in nearby:
-                                st.write(
-                                    f"- {f.get('name')} — {(f.get('agency') or '').strip().upper()} · {float(f.get('size_ha') or 0.0):,.1f} ha · {f.get('control','—')} · {f['_dist_km']:.1f} km away · Started {str(f.get('started') or '')[:10] or '—'}"
-                                )
-                        else:
-                            st.success(f"No active fires within 40 km of {place_lbl}.")
-            except Exception as e:
-                st.error(f"Safety check failed: {e}")
+                    st.error(f"{len(near)} fire(s) within 40 km of {label}:")
+                    near.sort(key=lambda x: x.get("_dist_km", 9e9))
+                    for f in near:
+                        st.markdown(fmt_fire_line(f, show_km=True))
+                    _guidance_block()
 
 # ===== TAB 2: INCIDENT BRIEF =====
 with t2:
-    st.subheader("Incident Briefs")
+    st.subheader("Incident Brief")
 
     if not risk_url:
-        st.warning("Incident Brief webhook URL is not configured. Set N8N_RISK_URL in App → Settings → Secrets.")
+        st.warning("Incident brief webhook is not configured. Set N8N_RISK_URL in App → Settings → Secrets.")
     else:
         ss = st.session_state
         mode = st.radio("Find by", ["Fire ID", "Location"], horizontal=True, key="brief_mode")
         with st.form("brief_form", clear_on_submit=False):
             payload: Optional[Dict[str, Any]] = None
             if mode == "Fire ID":
-                fire_id = st.text_input("Fire ID (e.g., 68622)", key="brief_id")
+                fire_id = st.text_input("Fire ID (e.g. 68622)", key="brief_id")
                 if fire_id.strip():
-                    payload = {"id": fire_id.strip()}
+                    payload = {"id": re.sub(r"\D", "", fire_id.strip())}
             else:
                 c1, c2, c3 = st.columns(3)
                 with c1:
@@ -635,9 +786,9 @@ with t2:
                     radius_max_pixels=60,
                     pickable=False,
                 )
-                st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view), use_container_width=True)
-                st.caption("Legend: 🔴 Out of Control · 🟡 Being Held · 🟢 Under Control")
+                st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view))
 
+                # Optional: Nearest places (Google Places)
                 def _places_nearby(lat: float, lon: float, radius_m: int, api_key: str, types: Tuple[str, ...] = ("locality", "sublocality", "neighborhood")) -> List[Dict[str, Any]]:
                     url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
                     out: List[Dict[str, Any]] = []
@@ -653,11 +804,11 @@ with t2:
                             seen.add(pid)
                             loc = (it.get("geometry") or {}).get("location") or {}
                             plat, plon = float(loc.get("lat", 0)), float(loc.get("lng", 0))
-                            R = 6371.0
-                            p = math.pi / 180.0
+                            # haversine
+                            R = 6371.0; p = math.pi/180.0
                             dlat = (plat - float(lat)) * p
                             dlon = (plon - float(lon)) * p
-                            a = math.sin(dlat / 2) ** 2 + math.cos(float(lat) * p) * math.cos(plat * p) * math.sin(dlon / 2) ** 2
+                            a = math.sin(dlat/2)**2 + math.cos(float(lat)*p)*math.cos(plat*p)*math.sin(dlon/2)**2
                             dist_km = 2 * R * math.asin(math.sqrt(a))
                             out.append({"name": it.get("name") or "(unnamed)", "types": it.get("types") or [], "lat": plat, "lon": plon, "distance_km": round(dist_km, 2)})
                     out.sort(key=lambda x: x["distance_km"])
@@ -690,8 +841,13 @@ with t2:
                                 else:
                                     st.caption("none")
 
-        with st.expander("Safety guidance"):
-            _guidance_block()
+            # Quick links / details
+            cA, cB = st.columns(2)
+            if (data or {}).get("map_link"):
+                cA.link_button("Open in Google Maps", data["map_link"])
+            with cB:
+                with st.popover("Details"):
+                    st.json(incident)
 
 # ===== TAB 3: SAFER Fire Alert =====
 with t3:
@@ -699,7 +855,7 @@ with t3:
     st.write("Enter your **address** (optional). We’ll geocode it to coordinates, or you can set lat/lon manually.")
 
     if not subscribe_url:
-        st.warning("Subscribe webhook URL is not configured. Add N8N_SUBSCRIBE_URL in App → Settings → Secrets.")
+        st.warning("Subscribe webhook URL is not configured. Add N8N_SUBSCRIBE_URL in **App → Settings → Secrets**.")
 
     ss = st.session_state
     ss.setdefault("sub_email", "")
@@ -709,24 +865,34 @@ with t3:
     ss.setdefault("sub_radius", 10)
     ss.setdefault("alerts_active", False)
 
+    # ---- form ----
     with st.form("sub_form", clear_on_submit=False):
         email = st.text_input("Email", value=ss["sub_email"], placeholder="you@example.com")
+
         c_addr = st.columns([4, 1])
-        address = c_addr[0].text_input("Address (optional)", value=ss["sub_address"], placeholder="123 Main St, Halifax, NS B3H 2Y9")
-        geocode_clicked = c_addr[1].form_submit_button("Geocode", use_container_width=True, disabled=not bool(opencage_key or google_key))
+        address = c_addr[0].text_input(
+            "Address (optional)", value=ss["sub_address"], placeholder="123 Main St, Halifax, NS B3H 2Y9",
+        )
+        geocode_clicked = c_addr[1].form_submit_button(
+            "Geocode", use_container_width=True, disabled=not bool(opencage_key or google_key),
+        )
+
         colA, colB = st.columns(2)
         lat = colA.number_input("Latitude", value=float(ss["sub_lat"]), step=0.0001, format="%.6f")
         lon = colB.number_input("Longitude", value=float(ss["sub_lon"]), step=0.0001, format="%.6f")
         radius = st.number_input("Radius (km)", min_value=1, max_value=250, value=int(ss["sub_radius"]), step=1)
+
         btn_label = "Cancel Alerts" if ss.get("alerts_active") else "Activate Alerts"
         toggle_clicked = st.form_submit_button(btn_label, type="primary", disabled=not bool(subscribe_url))
 
+    # persist
     ss["sub_email"], ss["sub_address"] = email, address
     ss["sub_lat"], ss["sub_lon"], ss["sub_radius"] = float(lat), float(lon), int(radius)
 
+    # geocode button handler
     if geocode_clicked:
         if not (opencage_key or google_key):
-            st.error("Please add at least one geocoding key (OpenCage or Google) in App → Settings → Secrets.")
+            st.error("Please add at least one geocoding key (OpenCage or Google) in **App → Settings → Secrets**.")
         elif not address.strip():
             st.error("Please enter an address to geocode.")
         else:
@@ -737,52 +903,28 @@ with t3:
                 g_lat, g_lon, g_fmt, g_src = g
                 ss["sub_lat"], ss["sub_lon"], ss["sub_address"] = g_lat, g_lon, g_fmt
                 st.success(f"Coordinates filled from address (via {g_src}).")
-                st.rerun()
 
-    def _subscribe():
-        errs: List[str] = []
-        if not _valid_email(st.session_state.get("sub_email", "")):
-            errs.append("Please enter a valid email.")
-        if abs(float(st.session_state["sub_lat"])) > 90:
-            errs.append("Latitude must be between -90 and 90.")
-        if abs(float(st.session_state["sub_lon"])) > 180:
-            errs.append("Longitude must be between -180 and 180.")
-        if not (1 <= int(st.session_state["sub_radius"]) <= 250):
-            errs.append("Radius must be 1–250 km.")
-        if errs:
-            for e in errs:
-                st.error(e)
-            return
-        email = st.session_state["sub_email"].strip()
-        address = st.session_state["sub_address"].strip()
-        lat_val, lon_val = float(st.session_state["sub_lat"]), float(st.session_state["sub_lon"])
-        if (opencage_key or google_key) and address:
-            g = geocode_address(address, opencage_key, google_key)
-            if g:
-                lat_val, lon_val, fmt, _ = g
-                st.session_state["sub_lat"], st.session_state["sub_lon"], st.session_state["sub_address"] = lat_val, lon_val, fmt
-                address = fmt
-        body = {"email": email, "lat": lat_val, "lon": lon_val, "radius_km": int(st.session_state["sub_radius"]), "address": address, "active": True, "from": "streamlit"}
-        resp = post_json(subscribe_url, body, shared_secret or None, timeout=timeout_sec)
-        st.success(f'Alerts activated for "{email}".')
-        st.json(resp)
-        st.session_state["alerts_active"] = True
-        st.rerun()
-
-    def _unsubscribe():
-        email = st.session_state.get("sub_email", "").strip()
-        if not _valid_email(email):
-            st.error("Please enter a valid email to cancel alerts.")
-            return
-        body = {"email": email, "active": False, "from": "streamlit"}
-        resp = post_json(subscribe_url, body, shared_secret or None, timeout=timeout_sec)
-        st.success(f'Alerts canceled for "{email}".')
-        st.json(resp)
-        st.session_state["alerts_active"] = False
-        st.rerun()
-
+    # toggle alerts
     if toggle_clicked and subscribe_url:
-        if st.session_state.get("alerts_active"):
-            _unsubscribe()
+        if not _valid_email(email):
+            st.error("Please enter a valid email.")
         else:
-            _subscribe()
+            try:
+                body = {
+                    "email": email,
+                    "lat": float(ss["sub_lat"]),
+                    "lon": float(ss["sub_lon"]),
+                    "radius_km": int(ss["sub_radius"]),
+                    "active": not bool(ss.get("alerts_active")),
+                }
+                res = post_json(subscribe_url, body, shared_secret or None, timeout=timeout_sec)
+                ok = bool(res) and (res.get("ok") is True or res.get("status") in ("ok", "success"))
+                ss["alerts_active"] = not ss.get("alerts_active") if ok else ss.get("alerts_active")
+                if ok:
+                    st.success("Alerts " + ("activated" if ss["alerts_active"] else "canceled") + ".")
+                else:
+                    st.warning("Request sent, but the server did not confirm success.")
+            except requests.HTTPError as e:
+                st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
+            except Exception as e:
+                st.error(f"Failed to toggle alerts: {e}")
