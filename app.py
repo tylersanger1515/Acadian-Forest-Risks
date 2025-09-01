@@ -677,7 +677,7 @@ if ask:
     try:
         if agent_url:
             # Send the user’s text to the agent
-            res = post_json(agent_url, {"q": q}, shared_secret or None, timeout=timeout_sec)
+            res = post_json(agent_url, {"q": q, "question": q}, shared_secret or None, timeout=timeout_sec)
             md = res.get("answer_md") or "_No answer_"
             st.markdown(md)
 
