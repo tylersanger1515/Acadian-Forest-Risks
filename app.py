@@ -490,7 +490,7 @@ with t1:
                 "how far is fire 68622 from Halifax • started last 7 days • older than 3 days"
             ),
         )
-        ask = st.button("Ask", key="ask_fires", disabled=not bool(fires_url))
+        ask = st.button("Ask", key="ask_fires", disabled=not bool(agent_url))
 
         # Retrieve fires list from payload when needed
         def _get_fires_from_payload() -> List[Dict[str, Any]]:
