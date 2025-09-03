@@ -486,7 +486,8 @@ with t1:
                 "how far is fire 68622 from Halifax • started last 7 days • older than 3 days"
             ),
         )
-        ask = st.button("Ask", key="ask_fires", disabled=not bool(agent_url))
+        ask = st.button("Ask", key="ask_fires",
+                disabled=not bool(st.session_state.get("fires_payload")))
 
         # Retrieve fires list from payload when needed
         def _get_fires_from_payload() -> List[Dict[str, Any]]:
@@ -669,48 +670,9 @@ with t1:
 
         agent_url = _get_secret("N8N_AGENT_URL", "")  # new secret for the AI Agent webhook
 
-        # --- send question to the Agent (right column) ---
-        if ask:
-            try:
-                if agent_url:
-                    # Send the user’s text to the agent
-                    res = post_json(agent_url, {"q": q, "question": q}, shared_secret or None, timeout=timeout_sec)
-
-                    # If a raw string came back, parse it
-                    if isinstance(res, dict) and "response" in res and not res.get("answer_md"):
-                        try:
-                            res = json.loads(res["response"])
-                        except Exception:
-                            pass
-
-                    md = res.get("answer_md") or "_No answer_"
-                    st.markdown(md)
-
-                    # If agent returns map markers, plot them
-                    marks = res.get("markers") or []
-                    if marks:
-                        view = pdk.ViewState(latitude=float(marks[0]["lat"]),
-                                             longitude=float(marks[0]["lon"]),
-                                             zoom=6)
-                        layer = pdk.Layer(
-                            "ScatterplotLayer",
-                            data=[{"lat": m["lat"], "lon": m["lon"], "name": m["label"]} for m in marks],
-                            get_position=["lon", "lat"],
-                            get_radius=1200,
-                            radius_min_pixels=4,
-                            radius_max_pixels=30,
-                            pickable=True,
-                        )
-                        st.pydeck_chart(pdk.Deck(layers=[layer],
-                                                 initial_view_state=view,
-                                                 tooltip={"text": "{name}"}))
-                else:
-                    # fallback to the old local parser
-                    answer_fire_question(q)
-            except requests.HTTPError as e:
-                st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
-            except Exception as e:
-                st.error(f"Failed to answer: {e}")
+        # --- local Q&A (no external Agent) ---
+if ask:
+    answer_fire_question(q)
 
         st.divider()
         st.markdown("#### Safety check (40 km)")
