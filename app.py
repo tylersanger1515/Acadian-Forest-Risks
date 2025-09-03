@@ -486,8 +486,7 @@ with t1:
                 "how far is fire 68622 from Halifax • started last 7 days • older than 3 days"
             ),
         )
-        ask = st.button("Ask", key="ask_fires",
-                disabled=not bool(st.session_state.get("fires_payload")))
+        ask = st.button("Ask", key="ask_fires", disabled=not bool(agent_url))
 
         # Retrieve fires list from payload when needed
         def _get_fires_from_payload() -> List[Dict[str, Any]]:
@@ -668,56 +667,90 @@ with t1:
             st.write("Try one of the example questions above. Here's a quick count by province:")
             st.json(by_p)
 
-        agent_url = _get_secret("N8N_AGENT_URL", "")  # <-- can stay; unused
+        agent_url = _get_secret("N8N_AGENT_URL", "")  # new secret for the AI Agent webhook
 
-# --- local Q&A (no external Agent) ---
-    if ask:
-        answer_fire_question(q)
+        # --- send question to the Agent (right column) ---
+        if ask:
+            try:
+                if agent_url:
+                    # Send the user’s text to the agent
+                    res = post_json(agent_url, {"q": q, "question": q}, shared_secret or None, timeout=timeout_sec)
 
-    st.divider()
-    st.markdown("#### Safety check (40 km)")
-    loc_in = st.text_input(
-        "Your community or coordinates",
-        placeholder=(
-            "e.g. Halifax NS  |  Moncton  |  44.65,-63.57  • Tip: include your postal code for better geocoding"
-        ),
-        key="safety_place",
-)
+                    # If a raw string came back, parse it
+                    if isinstance(res, dict) and "response" in res and not res.get("answer_md"):
+                        try:
+                            res = json.loads(res["response"])
+                        except Exception:
+                            pass
 
-    if st.button("Check proximity", disabled=not bool(ss.get("fires_payload"))):
-        fires = _get_fires_from_payload()
-        g = None
+                    md = res.get("answer_md") or "_No answer_"
+                    st.markdown(md)
 
-        if _parse_latlon(loc_in or ""):
-            lat, lon = _parse_latlon(loc_in)
-            g = (float(lat), float(lon), f"{lat:.4f}, {lon:.4f}")
-        elif (loc_in or "").strip():
-            gg = geocode_address(loc_in, opencage_key, google_key)
-            if gg:
-                g = (float(gg[0]), float(gg[1]), gg[2])
+                    # If agent returns map markers, plot them
+                    marks = res.get("markers") or []
+                    if marks:
+                        view = pdk.ViewState(latitude=float(marks[0]["lat"]),
+                                             longitude=float(marks[0]["lon"]),
+                                             zoom=6)
+                        layer = pdk.Layer(
+                            "ScatterplotLayer",
+                            data=[{"lat": m["lat"], "lon": m["lon"], "name": m["label"]} for m in marks],
+                            get_position=["lon", "lat"],
+                            get_radius=1200,
+                            radius_min_pixels=4,
+                            radius_max_pixels=30,
+                            pickable=True,
+                        )
+                        st.pydeck_chart(pdk.Deck(layers=[layer],
+                                                 initial_view_state=view,
+                                                 tooltip={"text": "{name}"}))
+                else:
+                    # fallback to the old local parser
+                    answer_fire_question(q)
+            except requests.HTTPError as e:
+                st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
+            except Exception as e:
+                st.error(f"Failed to answer: {e}")
 
-        if not g:
-            st.warning("Couldn't locate that place.")
-        else:
-            lat0, lon0, label = g
-            near = []
-            for f in fires:
-                try:
-                    dkm = haversine_km(lat0, lon0, float(f.get("lat")), float(f.get("lon")))
-                    if dkm is not None and dkm <= 40.0:
-                        f2 = dict(f); f2["_dist_km"] = dkm
-                        near.append(f2)
-                except Exception:
-                    pass
-
-            if not near:
-                st.success(f"No active fires within 40 km of {label}.")
+        st.divider()
+        st.markdown("#### Safety check (40 km)")
+        loc_in = st.text_input(
+            "Your community or coordinates",
+            placeholder=(
+                "e.g. Halifax NS  |  Moncton  |  44.65,-63.57  • Tip: include your postal code for best accuracy (e.g. B3H 1X1)"
+            ),
+            key="safety_place",
+        )
+        if st.button("Check proximity", disabled=not bool(ss.get("fires_payload"))):
+            fires = _get_fires_from_payload()
+            g = None
+            if _parse_latlon(loc_in or ""):
+                lat, lon = _parse_latlon(loc_in)
+                g = (float(lat), float(lon), f"{lat:.4f}, {lon:.4f}")
+            elif (loc_in or "").strip():
+                gg = geocode_address(loc_in, opencage_key, google_key)
+                if gg:
+                    g = (float(gg[0]), float(gg[1]), gg[2])
+            if not g:
+                st.warning("Couldn't locate that place.")
             else:
-                st.error(f"{len(near)} fire(s) within 40 km of {label}:")
-                near.sort(key=lambda x: x.get("_dist_km", 9e9))
-                for f in near:
-                    st.markdown(fmt_fire_line(f, show_km=True))
-                _guidance_block()
+                lat0, lon0, label = g
+                near = []
+                for f in fires:
+                    try:
+                        dkm = haversine_km(lat0, lon0, float(f.get("lat")), float(f.get("lon")))
+                        if dkm is not None and dkm <= 40.0:
+                            f2 = dict(f); f2["_dist_km"] = dkm; near.append(f2)
+                    except Exception:
+                        pass
+                if not near:
+                    st.success(f"No active fires within 40 km of {label}.")
+                else:
+                    st.error(f"{len(near)} fire(s) within 40 km of {label}:")
+                    near.sort(key=lambda x: x.get("_dist_km", 9e9))
+                    for f in near:
+                        st.markdown(fmt_fire_line(f, show_km=True))
+                    _guidance_block()
 
 # ===== TAB 2: INCIDENT BRIEF =====
 with t2:
