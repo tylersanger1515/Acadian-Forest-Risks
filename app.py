@@ -278,10 +278,6 @@ with t1:
                 data = post_json(fires_url, {"from": "streamlit"}, shared_secret or None, timeout=timeout_sec)
                 html = data.get("summary_html")
                 ss["fires_payload"], ss["fires_html"] = data, html
-                if isinstance(html, str) and html.strip():
-                    components.html(html, height=820, scrolling=True)
-                else:
-                    st.write(data.get("summary") or data.get("summary_text") or "(No summary returned)")
                 st.success("Received response from n8n")
             except requests.HTTPError as e:
                 st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
