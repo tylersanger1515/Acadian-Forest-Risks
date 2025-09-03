@@ -670,58 +670,54 @@ with t1:
 
         agent_url = _get_secret("N8N_AGENT_URL", "")  # <-- can stay; unused
 
-        # --- local Q&A (no external Agent) ---
-        if ask:
-            answer_fire_question(q)
+# --- local Q&A (no external Agent) ---
+    if ask:
+        answer_fire_question(q)
 
-        st.divider()
-        st.markdown("#### Safety check (40 km)")
-        loc_in = st.text_input(
-            "Your community or coordinates",
-            placeholder=(
-                "e.g. Halifax NS  |  Moncton  |  44.65,-63.57  • Tip: include your postal code for better geocoding"
-            ),
-            key="safety_place",
-        )
+    st.divider()
+    st.markdown("#### Safety check (40 km)")
+    loc_in = st.text_input(
+        "Your community or coordinates",
+        placeholder=(
+            "e.g. Halifax NS  |  Moncton  |  44.65,-63.57  • Tip: include your postal code for better geocoding"
+        ),
+        key="safety_place",
+)
 
-        if st.button("Check proximity", disabled=not bool(ss.get("fires_payload"))):
-            fires = _get_fires_from_payload()
-            g = None
+    if st.button("Check proximity", disabled=not bool(ss.get("fires_payload"))):
+        fires = _get_fires_from_payload()
+        g = None
 
-            if _parse_latlon(loc_in or ""):
-                lat, lon = _parse_latlon(loc_in)
-                g = (float(lat), float(lon), f"{lat:.4f}, {lon:.4f}")
-            elif (loc_in or "").strip():
-                gg = geocode_address(loc_in, opencage_key, google_key)
-                if gg:
-                    g = (float(gg[0]), float(gg[1]), gg[2])
+        if _parse_latlon(loc_in or ""):
+            lat, lon = _parse_latlon(loc_in)
+            g = (float(lat), float(lon), f"{lat:.4f}, {lon:.4f}")
+        elif (loc_in or "").strip():
+            gg = geocode_address(loc_in, opencage_key, google_key)
+            if gg:
+                g = (float(gg[0]), float(gg[1]), gg[2])
 
-            if not g:
-                st.warning("Couldn't locate that place.")
+        if not g:
+            st.warning("Couldn't locate that place.")
+        else:
+            lat0, lon0, label = g
+            near = []
+            for f in fires:
+                try:
+                    dkm = haversine_km(lat0, lon0, float(f.get("lat")), float(f.get("lon")))
+                    if dkm is not None and dkm <= 40.0:
+                        f2 = dict(f); f2["_dist_km"] = dkm
+                        near.append(f2)
+                except Exception:
+                    pass
+
+            if not near:
+                st.success(f"No active fires within 40 km of {label}.")
             else:
-                lat0, lon0, label = g
-                near = []
-                for f in fires:
-                    try:
-                        dkm = haversine_km(lat0, lon0, float(f.get("lat")), float(f.get("lon")))
-                        if dkm is not None and dkm <= 40.0:
-                            f2 = dict(f)
-                            f2["_dist_km"] = dkm
-                            near.append(f2)
-                    except Exception:
-                        pass
-
-                if not near:
-                    st.success(f"No active fires within 40 km of {label}.")
-                else:
-                    st.error(f"{len(near)} fire(s) within 40 km of {label}:")
-                    near.sort(key=lambda x: x.get("_dist_km", 9e9))
-                    for f in near:
-                        st.markdown(fmt_fire_line(f, show_km=True))
-                    _guidance_block()
-
-
-
+                st.error(f"{len(near)} fire(s) within 40 km of {label}:")
+                near.sort(key=lambda x: x.get("_dist_km", 9e9))
+                for f in near:
+                    st.markdown(fmt_fire_line(f, show_km=True))
+                _guidance_block()
 
 # ===== TAB 2: INCIDENT BRIEF =====
 with t2:
