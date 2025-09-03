@@ -668,22 +668,22 @@ with t1:
             st.write("Try one of the example questions above. Here's a quick count by province:")
             st.json(by_p)
 
-        agent_url = _get_secret("N8N_AGENT_URL", "")  # new secret for the AI Agent webhook
+        agent_url = _get_secret("N8N_AGENT_URL", "")  # <-- can stay; unused
 
-        # --- local Q&A (no external Agent) ---
+# --- local Q&A (no external Agent) ---
 if ask:
     answer_fire_question(q)
 
-        st.divider()
-        st.markdown("#### Safety check (40 km)")
-        loc_in = st.text_input(
-            "Your community or coordinates",
-            placeholder=(
-                "e.g. Halifax NS  |  Moncton  |  44.65,-63.57  • Tip: include your postal code for best accuracy (e.g. B3H 1X1)"
-            ),
-            key="safety_place",
-        )
-        if st.button("Check proximity", disabled=not bool(ss.get("fires_payload"))):
+st.divider()
+st.markdown("#### Safety check (40 km)")
+loc_in = st.text_input(
+    "Your community or coordinates",
+    placeholder=(
+        "e.g. Halifax NS  |  Moncton  |  44.65,-63.57  • Tip: include your postal code for better geocoding"
+    ),
+    key="safety_place",
+)
+if st.button("Check proximity", disabled=not bool(ss.get("fires_payload")))
             fires = _get_fires_from_payload()
             g = None
             if _parse_latlon(loc_in or ""):
