@@ -694,38 +694,60 @@ with t1:
                     _guidance_block()
 
 # =========================
-# TAB 2 — Fire Map & Locator (no Mapbox)
+# TAB 2 — Fire Map & Locator (no Mapbox, shaded outside ROI)
 # =========================
-with tabs[1]:
+with t2:  # <- IMPORTANT: use t2, not tabs[1]
     st.markdown("## Fire Map & Locator  ↪️")
 
+    # Pull fires from the payload you already store after pressing "Fetch Active Fires"
+    payload = st.session_state.get("fires_payload") or {}
+    fires = []
+    if isinstance(payload, dict):
+        fires = payload.get("fires") or payload.get("items") or []
+    fires = [f for f in fires if isinstance(f, dict)]
+
+    if not fires:
+        st.info("Fetch Active Fires first on the **Active Fires** tab.")
+        st.stop()
+
     # ---- Region of interest (NB, NS, PE, NL) ----
-    # Tweak a hair if you want tighter/looser edges
+    # Bounds are a little generous so the Maritime area fills the viewport nicely
     ROI_W, ROI_S, ROI_E, ROI_N = -71.0, 43.6, -52.0, 60.0
 
-    # Mask polygon: "world" outer ring + ROI inner ring (hole) -> shades everything outside ROI
+    # Mask polygon: world outer ring + ROI inner ring (hole) -> shades everything outside ROI
     world_ring = [[-180, -90], [180, -90], [180, 90], [-180, 90], [-180, -90]]
     roi_ring   = [[ROI_W, ROI_S], [ROI_E, ROI_S], [ROI_E, ROI_N], [ROI_W, ROI_N], [ROI_W, ROI_S]]
     mask_data  = [{"polygon": [world_ring, roi_ring]}]
 
     # ---- Helpers ----
-    def control_color(ctrl: str):
-        c = (ctrl or "").strip().lower()
-        if "out of control" in c:   return [216,  45,  42]   # red
-        if "being held"   in c:     return [238, 182,  54]   # yellow
-        if "under control" in c:    return [ 46, 199, 120]   # green
-        return [128, 136, 142]                               # grey (unknown)
+    def control_to_color(ctrl: str):
+        s = (ctrl or "").strip().lower()
+        if "out" in s:               return [216, 45, 42]   # red: Out of Control
+        if "held" in s:              return [238, 182, 54]  # yellow: Being Held
+        if "under" in s:             return [46, 199, 120]  # green: Under Control
+        return [128, 136, 142]                              # gray: Unknown
 
-    # Expect your dataframe to be in `active_df` with columns:
-    # ['id','name','agency','lat','lon','control','size_ha','started'] (adapt names if needed)
-    df = active_df.copy()
+    def to_row(f):
+        # normalize keys coming from your payload
+        return {
+            "id": f.get("id") or f.get("name"),
+            "name": f.get("name") or f.get("id"),
+            "agency": (f.get("agency") or "").strip().upper(),
+            "lat": float(f.get("lat")) if f.get("lat") is not None else None,
+            "lon": float(f.get("lon")) if f.get("lon") is not None else None,
+            "control": f.get("control") or f.get("status") or "Unknown",
+            "size_ha": float(f.get("size_ha") or 0),
+            "started": (str(f.get("started") or "")[:10]) or "—",
+        }
 
-    # Colour column for all points
-    df["_color"] = df["control"].map(control_color)
+    rows = [to_row(f) for f in fires if f.get("lat") is not None and f.get("lon") is not None]
+    for r in rows:
+        r["_color"] = control_to_color(r["control"])
 
     # --- UI layout ---
     left, right = st.columns([7, 5], gap="large")
 
+    # ---------- RIGHT: lookup & details ----------
     with right:
         st.subheader("Find by Fire ID")
         query_id = st.text_input("Fire ID (e.g. 68622 or 10-025-2025)", "")
@@ -735,71 +757,78 @@ with tabs[1]:
             if not q:
                 return None
             s = str(q).strip()
-            # Match either numeric id or string-style id/name
-            candidates = df[
-                (df["id"].astype(str) == s) |
-                (df.get("name", "").astype(str).str.casefold() == s.casefold())
-            ]
-            return candidates.head(1).to_dict("records")[0] if not candidates.empty else None
+            # match either the numeric id or the string name (e.g., 10-025-2025)
+            for r in rows:
+                if str(r["id"]) == s or str(r["name"]).casefold() == s.casefold():
+                    return r
+            return None
 
-        sel = lookup_fire(query_id) if go else None
+        selected = lookup_fire(query_id) if go else None
 
         st.subheader("Selected Fire")
-        if sel:
+        if selected:
             st.markdown(
                 f"""
                 <div style="font-size:2.2rem; line-height:1.1; margin-top:-8px;">
-                <b>{(sel.get('control') or 'Unknown').title()}</b>
+                  <b>{(selected.get('control') or 'Unknown').title()}</b>
                 </div>
-                """, unsafe_allow_html=True
+                """,
+                unsafe_allow_html=True,
             )
             c1, c2, c3 = st.columns(3)
-            c1.metric("Size (ha)", f"{sel.get('size_ha', 0)}")
-            c2.metric("Started",   f"{sel.get('started','—')}")
-            c3.metric("Agency",    f"{sel.get('agency','—')}")
-            st.markdown("• **ID:** "+str(sel.get("id","—")))
-            st.markdown(f"• **Location:** {sel.get('lat','—')}, {sel.get('lon','—')}")
+            c1.metric("Size (ha)", f"{selected.get('size_ha', 0)}")
+            c2.metric("Started", selected.get("started", "—"))
+            c3.metric("Agency",  selected.get("agency", "—"))
+            st.markdown("• **ID:** " + str(selected.get("id", "—")))
+            st.markdown(f"• **Location:** {selected.get('lat','—')}, {selected.get('lon','—')}")
         else:
             st.caption("Enter a fire ID and press **Get Brief** to highlight it on the map.")
 
+    # ---------- LEFT: the map ----------
     with left:
-        # ---- Deck.gl setup (no Mapbox) ----
-        # Initial view centred roughly on NB/NS/PE area
+        # Initial view centred on the Maritimes; limit zoom out so the region stays in focus
         view_state = pdk.ViewState(
             latitude=46.5, longitude=-62.5, zoom=5.2, min_zoom=4.8, max_zoom=10, pitch=0, bearing=0
         )
+        # If a fire is selected, re-center a bit closer
+        if selected:
+            try:
+                view_state.latitude = float(selected["lat"])
+                view_state.longitude = float(selected["lon"])
+                view_state.zoom = 6.4
+            except Exception:
+                pass
 
-        # Lock interactions to the ROI via controller bounds
+        # Map view (no Mapbox). We can't *hard stop* panning without Mapbox maxBounds,
+        # so we visually lock the area by shading everything outside ROI.
         map_view = pdk.View(
             type="MapView",
-            controller={
-                "bounds": [[ROI_W, ROI_S], [ROI_E, ROI_N]],
-                "minZoom": 4.8,
-                "maxZoom": 10,
-                "dragRotate": False,
-            },
+            controller={"minZoom": 4.8, "maxZoom": 10, "dragRotate": False},
         )
 
-        # All fires layer (coloured pins)
+        # All fires layer (colored pins)
         all_fires = pdk.Layer(
             "ScatterplotLayer",
-            df,
+            data=rows,
             get_position=["lon", "lat"],
             get_fill_color="_color",
             get_line_color=[255, 255, 255],
             line_width_min_pixels=0.5,
-            radius_scale=25,               # geographic radius -> pixels with min/max below
+            radius_scale=25,
             radius_min_pixels=4,
             radius_max_pixels=18,
             pickable=True,
         )
 
-        # Optional: selected fire white ring
+        # Selected fire: white ring so it can’t be confused with Unknown (gray)
         selected_layer = None
-        if sel:
+        if selected:
             selected_layer = pdk.Layer(
                 "ScatterplotLayer",
-                data=[sel],
+                data=[{
+                    "lat": selected["lat"], "lon": selected["lon"],
+                    "name": selected["name"],
+                }],
                 get_position=["lon", "lat"],
                 get_fill_color=[255, 255, 255],
                 get_line_color=[0, 0, 0],
@@ -810,23 +839,22 @@ with tabs[1]:
                 pickable=False,
             )
 
-        # Outside mask layer (dim everything outside ROI)
+        # Outside mask layer (dim everything outside NB/NS/PE/NL rectangle)
         mask_layer = pdk.Layer(
             "PolygonLayer",
             data=mask_data,
             get_polygon="polygon",
             stroked=False,
             filled=True,
-            get_fill_color=[18, 21, 24, 150],   # semi-transparent dark
+            get_fill_color=[18, 21, 24, 150],  # semi-transparent dark
             pickable=False,
         )
 
-        # Build layer stack
         layers = [all_fires, mask_layer] if not selected_layer else [all_fires, selected_layer, mask_layer]
 
         tooltip = {
             "html": "<b>{id}</b><br/>Agency: {agency}<br/>Control: {control}<br/>Size: {size_ha} ha",
-            "style": {"backgroundColor": "rgba(20,20,22,0.95)", "color": "white"}
+            "style": {"backgroundColor": "rgba(20,20,22,0.95)", "color": "white"},
         }
 
         deck = pdk.Deck(
@@ -834,14 +862,13 @@ with tabs[1]:
             initial_view_state=view_state,
             views=[map_view],
             tooltip=tooltip,
-            map_provider="carto",          # <— no Mapbox
-            map_style="light",             # 'light' | 'dark-matter' | 'voyager'
+            map_provider="carto",        # no Mapbox
+            map_style="light",           # 'light' | 'dark-matter' | 'voyager'
             height=650,
         )
-
         st.pydeck_chart(deck, use_container_width=True)
 
-    # Legend row (includes white ring for selected marker)
+    # Legend row (white ring is "Selected", gray dot is truly Unknown)
     st.markdown(
         """
         <div style="margin-top:.25rem; font-size:0.95rem;">
