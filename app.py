@@ -693,224 +693,169 @@ with t1:
                         st.markdown(fmt_fire_line(f, show_km=True))
                     _guidance_block()
 
-# ===== TAB 2: FIRE MAP & LOCATOR =====
-with t2:
-    st.subheader("Fire Map & Locator")
+# =========================
+# TAB 2 — Fire Map & Locator (no Mapbox)
+# =========================
+with tabs[1]:
+    st.markdown("## Fire Map & Locator  ↪️")
 
-    # Pull fires from payload fetched in Tab 1
-    payload = st.session_state.get("fires_payload") or {}
-    fires_list: List[Dict[str, Any]] = []
-    if isinstance(payload, dict):
-        fires_list = payload.get("fires") or payload.get("items") or []
+    # ---- Region of interest (NB, NS, PE, NL) ----
+    # Tweak a hair if you want tighter/looser edges
+    ROI_W, ROI_S, ROI_E, ROI_N = -71.0, 43.6, -52.0, 60.0
 
-    if not fires_list:
-        st.info("Click **Fetch Active Fires** in the first tab to load today’s fires.")
-        st.stop()
+    # Mask polygon: "world" outer ring + ROI inner ring (hole) -> shades everything outside ROI
+    world_ring = [[-180, -90], [180, -90], [180, 90], [-180, 90], [-180, -90]]
+    roi_ring   = [[ROI_W, ROI_S], [ROI_E, ROI_S], [ROI_E, ROI_N], [ROI_W, ROI_N], [ROI_W, ROI_S]]
+    mask_data  = [{"polygon": [world_ring, roi_ring]}]
 
-    # --- helpers
-    def _norm_id(x: Any) -> str:
-        # lets "10-025-2025" work by matching digits only
-        return re.sub(r"\D", "", str(x or ""))
+    # ---- Helpers ----
+    def control_color(ctrl: str):
+        c = (ctrl or "").strip().lower()
+        if "out of control" in c:   return [216,  45,  42]   # red
+        if "being held"   in c:     return [238, 182,  54]   # yellow
+        if "under control" in c:    return [ 46, 199, 120]   # green
+        return [128, 136, 142]                               # grey (unknown)
 
-    def _as_float(v, default=None):
-        try:
-            return float(v)
-        except Exception:
-            return default
+    # Expect your dataframe to be in `active_df` with columns:
+    # ['id','name','agency','lat','lon','control','size_ha','started'] (adapt names if needed)
+    df = active_df.copy()
 
-    # Build rows for map pins
-    map_rows: List[Dict[str, Any]] = []
-    for f in fires_list:
-        lat = _as_float(f.get("lat"))
-        lon = _as_float(f.get("lon"))
-        if lat is None or lon is None:
-            continue
-        ctrl = f.get("control") or f.get("status") or ""
-        color = _status_to_color(ctrl)  # reuses helper from Tab 1
-        size_ha = _as_float(f.get("size_ha"))
-        map_rows.append({
-            "lat": lat,
-            "lon": lon,
-            "name": f.get("name") or f.get("id") or "(id?)",
-            "id_norm": _norm_id(f.get("name") or f.get("id")),
-            "control": ctrl,
-            "size_ha": size_ha if size_ha is not None else "—",
-            "color": color,
-        })
+    # Colour column for all points
+    df["_color"] = df["control"].map(control_color)
 
-    # -------- Region clamp + “outside” dim
-    # (PROVINCE_BOUNDS exists above; uses NB/NS/PE/NL)
-    _west  = min(b["west"]  for b in PROVINCE_BOUNDS.values())
-    _south = min(b["south"] for b in PROVINCE_BOUNDS.values())
-    _east  = max(b["east"]  for b in PROVINCE_BOUNDS.values())
-    _north = max(b["north"] for b in PROVINCE_BOUNDS.values())
-    BBOX = (_west, _south, _east, _north)
+    # --- UI layout ---
+    left, right = st.columns([7, 5], gap="large")
 
-    # Mask that dims everything outside our region (world polygon with a “hole”)
-    mask_geojson = {
-        "type": "FeatureCollection",
-        "features": [{
-            "type": "Feature",
-            "properties": {},
-            "geometry": {
-                "type": "Polygon",
-                "coordinates": [
-                    [[-180, -90], [180, -90], [180, 90], [-180, 90], [-180, -90]],  # whole world
-                    [[BBOX[0], BBOX[1]], [BBOX[0], BBOX[3]], [BBOX[2], BBOX[3]], [BBOX[2], BBOX[1]], [BBOX[0], BBOX[1]]]
-                ]
-            }
-        }]
-    }
-    mask_layer = pdk.Layer(
-        "GeoJsonLayer",
-        data=mask_geojson,
-        stroked=False,
-        filled=True,
-        get_fill_color=[255, 255, 255, 150],  # dim outside with semi-opaque white
-        pickable=False,
-    )
+    with right:
+        st.subheader("Find by Fire ID")
+        query_id = st.text_input("Fire ID (e.g. 68622 or 10-025-2025)", "")
+        go = st.button("Get Brief", type="primary")
 
-    # Thin rectangle “borders” for the four provinces (approx)
-    border_paths = []
-    for b in PROVINCE_BOUNDS.values():
-        rect = [
-            [b["west"], b["south"]],
-            [b["west"], b["north"]],
-            [b["east"], b["north"]],
-            [b["east"], b["south"]],
-            [b["west"], b["south"]],
-        ]
-        border_paths.append({"path": rect})
-    borders = pdk.Layer(
-        "PathLayer",
-        data=border_paths,
-        get_path="path",
-        get_width=2,
-        get_color=[255, 255, 255],
-        width_min_pixels=1,
-        pickable=False,
-    )
+        def lookup_fire(q: str):
+            if not q:
+                return None
+            s = str(q).strip()
+            # Match either numeric id or string-style id/name
+            candidates = df[
+                (df["id"].astype(str) == s) |
+                (df.get("name", "").astype(str).str.casefold() == s.casefold())
+            ]
+            return candidates.head(1).to_dict("records")[0] if not candidates.empty else None
 
-    # Map controller: clamp panning/zoom to region
-    controller = {
-        "dragRotate": False,
-        "minZoom": 5.2,
-        "maxZoom": 11,
-        "bounds": [[BBOX[0], BBOX[1]], [BBOX[2], BBOX[3]]],
-    }
+        sel = lookup_fire(query_id) if go else None
 
-    # Satellite basemap when a Mapbox token is present (see notes below)
-    mapbox_token = (
-        st.secrets.get("MAPBOX_TOKEN", "")
-        or st.secrets.get("MAPBOX_API_KEY", "")
-        or os.getenv("MAPBOX_TOKEN", "")
-        or os.getenv("MAPBOX_API_KEY", "")
-        or os.getenv("MAPBOX_ACCESS_TOKEN", "")
-    )
-    map_style = "mapbox://styles/mapbox/satellite-streets-v12" if mapbox_token else None
-
-    col_map, col_side = st.columns([3, 2], gap="large")
-
-    # ---------- RIGHT: Fire finder ----------
-    with col_side:
-        st.markdown("### Find by Fire ID")
-        in_id = st.text_input("Fire ID (e.g. 68622)", key="map_fire_id")
-
-        picked = st.session_state.get("selected_fire") or None
-        if st.button("Get Brief", type="primary"):
-            want = _norm_id(in_id)
-            picked = next((r for r in map_rows if r["id_norm"] == want), None)
-            st.session_state["selected_fire"] = picked or {}
-
-        def _stat(label: str, value: str):
+        st.subheader("Selected Fire")
+        if sel:
             st.markdown(
                 f"""
-                <div style="margin:10px 0">
-                  <div style="font-size:13px;color:#6b7280;margin-bottom:4px">{label}</div>
-                  <div style="font-size:36px;font-weight:700;line-height:1.1;white-space:normal">{value}</div>
+                <div style="font-size:2.2rem; line-height:1.1; margin-top:-8px;">
+                <b>{(sel.get('control') or 'Unknown').title()}</b>
                 </div>
-                """,
-                unsafe_allow_html=True,
+                """, unsafe_allow_html=True
             )
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Size (ha)", f"{sel.get('size_ha', 0)}")
+            c2.metric("Started",   f"{sel.get('started','—')}")
+            c3.metric("Agency",    f"{sel.get('agency','—')}")
+            st.markdown("• **ID:** "+str(sel.get("id","—")))
+            st.markdown(f"• **Location:** {sel.get('lat','—')}, {sel.get('lon','—')}")
+        else:
+            st.caption("Enter a fire ID and press **Get Brief** to highlight it on the map.")
 
-        if picked:
-            st.markdown("#### Selected Fire")
-            _stat("Control", str(picked.get("control") or "—"))
-            _stat("Size (ha)", f'{picked["size_ha"]:,.0f}' if isinstance(picked["size_ha"], (int, float)) else str(picked["size_ha"]))
-            # fetch extra fields from original list
-            fid = picked["id_norm"]
-            src = next((f for f in fires_list if _norm_id(f.get("name") or f.get("id")) == fid), {})
-            _stat("Started", str(src.get("started") or "—"))
-            st.write(f'- **ID**: {picked.get("name")}\n'
-                     f'- **Agency**: {(src.get("agency") or "—").upper()}\n'
-                     f'- **Location**: {picked["lat"]}, {picked["lon"]}')
-
-    # ---------- LEFT: Map ----------
-    if picked:
-        view = pdk.ViewState(latitude=float(picked["lat"]), longitude=float(picked["lon"]), zoom=8)
-    else:
-        view = pdk.ViewState(
-            latitude=sum(r["lat"] for r in map_rows)/len(map_rows),
-            longitude=sum(r["lon"] for r in map_rows)/len(map_rows),
-            zoom=5.8,
+    with left:
+        # ---- Deck.gl setup (no Mapbox) ----
+        # Initial view centred roughly on NB/NS/PE area
+        view_state = pdk.ViewState(
+            latitude=46.5, longitude=-62.5, zoom=5.2, min_zoom=4.8, max_zoom=10, pitch=0, bearing=0
         )
 
-    all_layer = pdk.Layer(
-        "ScatterplotLayer",
-        data=map_rows,
-        get_position=["lon", "lat"],
-        get_fill_color="color",
-        get_radius=1600,
-        radius_min_pixels=4,
-        radius_max_pixels=40,
-        pickable=True,
-    )
-    layers = [mask_layer, all_layer, borders]
+        # Lock interactions to the ROI via controller bounds
+        map_view = pdk.View(
+            type="MapView",
+            controller={
+                "bounds": [[ROI_W, ROI_S], [ROI_E, ROI_N]],
+                "minZoom": 4.8,
+                "maxZoom": 10,
+                "dragRotate": False,
+            },
+        )
 
-    # Selection highlight: white center + black ring (distinct from gray Unknown)
-    if picked:
-        layers.append(
-            pdk.Layer(
+        # All fires layer (coloured pins)
+        all_fires = pdk.Layer(
+            "ScatterplotLayer",
+            df,
+            get_position=["lon", "lat"],
+            get_fill_color="_color",
+            get_line_color=[255, 255, 255],
+            line_width_min_pixels=0.5,
+            radius_scale=25,               # geographic radius -> pixels with min/max below
+            radius_min_pixels=4,
+            radius_max_pixels=18,
+            pickable=True,
+        )
+
+        # Optional: selected fire white ring
+        selected_layer = None
+        if sel:
+            selected_layer = pdk.Layer(
                 "ScatterplotLayer",
-                data=[picked],
+                data=[sel],
                 get_position=["lon", "lat"],
                 get_fill_color=[255, 255, 255],
-                get_radius=3800,
-                radius_min_pixels=6,
-                radius_max_pixels=60,
-                stroked=True,
                 get_line_color=[0, 0, 0],
                 line_width_min_pixels=2,
+                radius_scale=55,
+                radius_min_pixels=8,
+                radius_max_pixels=24,
                 pickable=False,
             )
+
+        # Outside mask layer (dim everything outside ROI)
+        mask_layer = pdk.Layer(
+            "PolygonLayer",
+            data=mask_data,
+            get_polygon="polygon",
+            stroked=False,
+            filled=True,
+            get_fill_color=[18, 21, 24, 150],   # semi-transparent dark
+            pickable=False,
         )
 
-    with col_map:
-        st.pydeck_chart(
-            pdk.Deck(
-                layers=layers,
-                initial_view_state=view,
-                views=[pdk.View(type="MapView", controller=controller)],
-                tooltip={"html": "<b>{name}</b><br/>{control}<br/>{size_ha} ha"},
-                map_style=map_style,
-                mapbox_key=mapbox_token if mapbox_token else None,
-            ),
-            use_container_width=True,
+        # Build layer stack
+        layers = [all_fires, mask_layer] if not selected_layer else [all_fires, selected_layer, mask_layer]
+
+        tooltip = {
+            "html": "<b>{id}</b><br/>Agency: {agency}<br/>Control: {control}<br/>Size: {size_ha} ha",
+            "style": {"backgroundColor": "rgba(20,20,22,0.95)", "color": "white"}
+        }
+
+        deck = pdk.Deck(
+            layers=layers,
+            initial_view_state=view_state,
+            views=[map_view],
+            tooltip=tooltip,
+            map_provider="carto",          # <— no Mapbox
+            map_style="light",             # 'light' | 'dark-matter' | 'voyager'
+            height=650,
         )
 
-        st.markdown(
-            """
-            <div style="margin-top:.5rem;font-size:0.95rem;">
-              Legend:
-              <span style="color:#dc2626">●</span> Out of Control &nbsp;·&nbsp;
-              <span style="color:#eab308">●</span> Being Held &nbsp;·&nbsp;
-              <span style="color:#10b981">●</span> Under Control &nbsp;·&nbsp;
-              <span style="color:#6b7280">●</span> Unknown &nbsp;·&nbsp;
-              <span style="color:#000;">◯</span> Selected fire
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        st.pydeck_chart(deck, use_container_width=True)
+
+    # Legend row (includes white ring for selected marker)
+    st.markdown(
+        """
+        <div style="margin-top:.25rem; font-size:0.95rem;">
+        <b>Legend:</b>
+        <span style="color:#d82d2a;">●</span> Out of Control ·
+        <span style="color:#eeb636;">●</span> Being Held ·
+        <span style="color:#2ec778;">●</span> Under Control ·
+        <span style="color:#80888e;">●</span> Unknown ·
+        <span style="display:inline-block; width:0.9rem; height:0.9rem; border:2px solid #000; border-radius:50%; background:#fff; vertical-align:middle;"></span>
+        Selected
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # ===== TAB 3: SAFER Fire Alert =====
 with t3:
