@@ -259,7 +259,7 @@ def _guidance_block():
 
 
 # ---------- UI TABS ----------
-t1, t2, t3 = st.tabs(["🔥 Active Fires", "🧾 Incident Brief", "🚨 SAFER Fire Alert"])
+t1, t2, t3 = st.tabs(["🔥 Active Fires", "📍 Fire Map", "🚨 SAFER Fire Alert"])
 
 # ===== TAB 1: ACTIVE FIRES =====
 with t1:
