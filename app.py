@@ -708,133 +708,159 @@ with t2:
 
     if not fires_list:
         st.info("Click **Fetch Active Fires** in the first tab to load today’s fires.")
-    else:
-        # Build rows for the map (colored by control status)
-        map_rows: List[Dict[str, Any]] = []
-        for f in fires_list:
-            try:
-                lat = float(f.get("lat")); lon = float(f.get("lon"))
-            except Exception:
-                continue
-            ctrl = f.get("control") or f.get("status") or ""
-            color = _status_to_color(ctrl)
-            try:
-                size_ha = float(f.get("size_ha")) if f.get("size_ha") is not None else None
-            except Exception:
-                size_ha = None
-            map_rows.append({
-                "lat": lat,
-                "lon": lon,
-                "name": f.get("name") or f.get("id") or "(id?)",
-                "control": ctrl,
-                "size_ha": size_ha if size_ha is not None else "—",
-                "color": color,
-            })
+        st.stop()
 
-        # Find a specific fire by ID (centers the map and highlights it)
-        col_map, col_side = st.columns([3, 2], gap="large")
+    # --- Build rows for the map (colored by control status)
+    map_rows: List[Dict[str, Any]] = []
+    for f in fires_list:
+        try:
+            lat = float(f.get("lat")); lon = float(f.get("lon"))
+        except Exception:
+            continue
+        ctrl = f.get("control") or f.get("status") or ""
+        color = _status_to_color(ctrl)
+        try:
+            size_ha = float(f.get("size_ha")) if f.get("size_ha") is not None else None
+        except Exception:
+            size_ha = None
+        map_rows.append({
+            "lat": lat,
+            "lon": lon,
+            "name": f.get("name") or f.get("id") or "(id?)",
+            "control": ctrl,
+            "size_ha": size_ha if size_ha is not None else "—",
+            "color": color,
+        })
 
-        with col_side:
-            st.markdown("### Find by Fire ID")
-            fire_id_in = st.text_input("Fire ID (e.g. 68622)", key="map_fire_id")
-            picked: Optional[Dict[str, Any]] = None
-            if st.button("Get Brief", type="primary"):
-                fid = re.sub(r"\D", "", fire_id_in or "")
-                picked = next(
-                    (x for x in fires_list
-                     if str(x.get("name")) == fid or str(x.get("id")) == fid),
-                    None
-                )
-                st.session_state["selected_fire"] = picked or {}
+    # --- Hard clamp to Acadian region + NL/Labrador
+    #     west, south, east, north (deg)
+    BBOX = (-71.0, 42.6, -52.0, 57.8)   # tweak if you want a tighter/looser box
+    controller = {
+        "dragRotate": False,
+        "minZoom": 4.7,         # prevents zooming too far out
+        "maxZoom": 10,          # sane upper bound
+        "bounds": [[BBOX[0], BBOX[1]], [BBOX[2], BBOX[3]]],  # deck.gl MapController bounds
+    }
 
-            # Restore selection if we already chose one
-            if not picked:
-                picked = st.session_state.get("selected_fire") or None
+    col_map, col_side = st.columns([3, 2], gap="large")
 
-            # Show metrics for the selected fire (if any)
-            if picked:
-                st.markdown("#### Selected Fire")
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Control", str(picked.get("control") or picked.get("status") or "—"))
-                try:
-                    c2.metric("Size (ha)", f'{float(picked.get("size_ha") or 0):,.0f}')
-                except Exception:
-                    c2.metric("Size (ha)", str(picked.get("size_ha") or "—"))
-                c3.metric("Started", str(picked.get("started") or "—"))
+    # ---------- RIGHT: finder & stats (no truncation) ----------
+    with col_side:
+        st.markdown("### Find by Fire ID")
+        fire_id_in = st.text_input("Fire ID (e.g. 68622)", key="map_fire_id")
 
-                # Small detail list
-                st.write(
-                    f"- **ID**: {picked.get('name') or picked.get('id') or '—'}\n"
-                    f"- **Agency**: {(picked.get('agency') or '—').upper()}\n"
-                    f"- **Location**: {picked.get('lat')}, {picked.get('lon')}"
-                )
+        picked: Optional[Dict[str, Any]] = None
+        if st.button("Get Brief", type="primary"):
+            fid = re.sub(r"\D", "", fire_id_in or "")
+            picked = next(
+                (x for x in fires_list if str(x.get("name")) == fid or str(x.get("id")) == fid),
+                None
+            )
+            st.session_state["selected_fire"] = picked or {}
 
-        # Decide the view: if we have a selected fire, center on it; else center on mean
-        if map_rows:
-            if picked:
-                try:
-                    v_lat = float(picked.get("lat")); v_lon = float(picked.get("lon"))
-                    view = pdk.ViewState(latitude=v_lat, longitude=v_lon, zoom=8)
-                except Exception:
-                    view = pdk.ViewState(
-                        latitude=sum(r["lat"] for r in map_rows) / len(map_rows),
-                        longitude=sum(r["lon"] for r in map_rows) / len(map_rows),
-                        zoom=5.8,
-                    )
-            else:
-                view = pdk.ViewState(
-                    latitude=sum(r["lat"] for r in map_rows) / len(map_rows),
-                    longitude=sum(r["lon"] for r in map_rows) / len(map_rows),
-                    zoom=5.8,
-                )
+        # Restore selection if we already chose one
+        if not picked:
+            picked = st.session_state.get("selected_fire") or None
 
-            # Base layer: all fires
-            all_layer = pdk.Layer(
-                "ScatterplotLayer",
-                data=map_rows,
-                get_position=["lon", "lat"],
-                get_fill_color="color",
-                get_radius=1600,
-                radius_min_pixels=4,
-                radius_max_pixels=40,
-                pickable=True,
+        # Present stats WITHOUT ellipsis by using custom markup instead of st.metric
+        def _stat(label: str, value: str):
+            st.markdown(
+                f"""
+                <div style="margin:10px 0">
+                  <div style="font-size:13px;color:#6b7280;margin-bottom:4px">{label}</div>
+                  <div style="font-size:36px;font-weight:700;line-height:1.1;white-space:normal">{value}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
 
-            layers = [all_layer]
+        if picked:
+            ctrl_txt = str(picked.get("control") or picked.get("status") or "—")
+            try:
+                size_txt = f'{float(picked.get("size_ha") or 0):,.0f}'
+            except Exception:
+                size_txt = str(picked.get("size_ha") or "—")
+            start_txt = str(picked.get("started") or "—")
 
-            # Highlight layer for the selected fire (bigger with white stroke)
-            if picked:
-                try:
-                    sel = [{
-                        "lat": float(picked["lat"]),
-                        "lon": float(picked["lon"]),
-                        "name": picked.get("name") or picked.get("id") or "(id?)",
-                    }]
-                    sel_layer = pdk.Layer(
-                        "ScatterplotLayer",
-                        data=sel,
-                        get_position=["lon", "lat"],
-                        get_fill_color=[255, 255, 255],
-                        get_radius=3800,
-                        radius_min_pixels=6,
-                        radius_max_pixels=60,
-                        pickable=False,
-                        stroked=True,
-                        get_line_color=[0, 0, 0],
-                        line_width_min_pixels=2,
-                    )
-                    layers.append(sel_layer)
-                except Exception:
-                    pass
+            st.markdown("#### Selected Fire")
+            _stat("Control", ctrl_txt)
+            _stat("Size (ha)", size_txt)
+            _stat("Started", start_txt)
+            st.write(
+                f"- **ID**: {picked.get('name') or picked.get('id') or '—'}\n"
+                f"- **Agency**: {(picked.get('agency') or '—').upper()}\n"
+                f"- **Location**: {picked.get('lat')}, {picked.get('lon')}"
+            )
 
-            with col_map:
-                st.pydeck_chart(pdk.Deck(
-                    layers=layers,
-                    initial_view_state=view,
-                    tooltip={"text": "{name}\n{control}\n{size_ha} ha"},
-                    map_style=None  # use default dark style; set your style string here if you prefer
-                ))
-                st.caption("Legend: 🔴 Out of Control · 🟡 Being Held · 🟢 Under Control · ⚪ Unknown")
+    # ---------- LEFT: map (clamped bounds) ----------
+    # Decide the view: if we have a selected fire, center on it; else center on mean
+    if picked:
+        try:
+            v_lat = float(picked.get("lat")); v_lon = float(picked.get("lon"))
+            view = pdk.ViewState(latitude=v_lat, longitude=v_lon, zoom=8)
+        except Exception:
+            view = pdk.ViewState(
+                latitude=sum(r["lat"] for r in map_rows) / len(map_rows),
+                longitude=sum(r["lon"] for r in map_rows) / len(map_rows),
+                zoom=5.8,
+            )
+    else:
+        view = pdk.ViewState(
+            latitude=sum(r["lat"] for r in map_rows) / len(map_rows),
+            longitude=sum(r["lon"] for r in map_rows) / len(map_rows),
+            zoom=5.8,
+        )
+
+    # Base layer: all fires
+    all_layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=map_rows,
+        get_position=["lon", "lat"],
+        get_fill_color="color",
+        get_radius=1600,
+        radius_min_pixels=4,
+        radius_max_pixels=40,
+        pickable=True,
+    )
+    layers = [all_layer]
+
+    # Highlight layer for the selected fire (bigger, white fill + black ring)
+    if picked:
+        try:
+            sel = [{
+                "lat": float(picked["lat"]),
+                "lon": float(picked["lon"]),
+                "name": picked.get("name") or picked.get("id") or "(id?)",
+            }]
+            sel_layer = pdk.Layer(
+                "ScatterplotLayer",
+                data=sel,
+                get_position=["lon", "lat"],
+                get_fill_color=[255, 255, 255],
+                get_radius=3800,
+                radius_min_pixels=6,
+                radius_max_pixels=60,
+                pickable=False,
+                stroked=True,
+                get_line_color=[0, 0, 0],
+                line_width_min_pixels=2,
+            )
+            layers.append(sel_layer)
+        except Exception:
+            pass
+
+    with col_map:
+        st.pydeck_chart(
+            pdk.Deck(
+                layers=layers,
+                initial_view_state=view,
+                views=[pdk.View(type="MapView", controller=controller)],
+                tooltip={"html": "<b>{name}</b><br/>{control}<br/>{size_ha} ha"},
+                map_style=None,  # keep your preferred style; set a string if needed
+            ),
+            use_container_width=True,
+        )
+        st.caption("Legend: 🔴 Out of Control · 🟡 Being Held · 🟢 Under Control · ⚪ Unknown")
 
 # ===== TAB 3: SAFER Fire Alert =====
 with t3:
