@@ -466,12 +466,10 @@ with t1:
         # UI: examples
         examples = [
             "which fires are out of control?",
-            "top 4 largest in NB",
-            "fires within 40 km of Halifax",
-            "what place is closest to fire 68586?",
+            "largest in NB",
             "when did fire 68622 start?",
-            "largest fire in NS",
-            "fires older than 3 days",
+            "total hectares burned in NS",
+            "fires older than 10 days",
             "fires between 100 and 500 ha in NL",
         ]
         ex_sel = st.selectbox("Examples", options=examples, index=0, key="examples_q")
