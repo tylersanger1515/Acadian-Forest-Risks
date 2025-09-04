@@ -697,71 +697,128 @@ with t1:
 with t2:
     st.subheader("Fire Map & Locator")
 
-    # Pull fires from the payload fetched in Tab 1
+    # Pull fires from payload fetched in Tab 1
     payload = st.session_state.get("fires_payload") or {}
     fires_list: List[Dict[str, Any]] = []
     if isinstance(payload, dict):
-        if isinstance(payload.get("fires"), list):
-            fires_list = payload["fires"]
-        elif isinstance(payload.get("items"), list):
-            fires_list = payload["items"]
+        fires_list = payload.get("fires") or payload.get("items") or []
 
     if not fires_list:
         st.info("Click **Fetch Active Fires** in the first tab to load today’s fires.")
         st.stop()
 
-    # --- rows for the map (colored by control status)
+    # --- helpers
+    def _norm_id(x: Any) -> str:
+        return re.sub(r"\D", "", str(x or ""))
+
+    def _as_float(v, default=None):
+        try:
+            return float(v)
+        except Exception:
+            return default
+
+    # Build rows for map pins
     map_rows: List[Dict[str, Any]] = []
     for f in fires_list:
-        try:
-            lat = float(f.get("lat")); lon = float(f.get("lon"))
-        except Exception:
+        lat = _as_float(f.get("lat"))
+        lon = _as_float(f.get("lon"))
+        if lat is None or lon is None:
             continue
         ctrl = f.get("control") or f.get("status") or ""
-        color = _status_to_color(ctrl)  # 🔴🟡🟢, grey for unknown
-        try:
-            size_ha = float(f.get("size_ha")) if f.get("size_ha") is not None else None
-        except Exception:
-            size_ha = None
+        color = _status_to_color(ctrl)
+        size_ha = _as_float(f.get("size_ha"))
         map_rows.append({
             "lat": lat,
             "lon": lon,
             "name": f.get("name") or f.get("id") or "(id?)",
+            "id_norm": _norm_id(f.get("name") or f.get("id")),
             "control": ctrl,
             "size_ha": size_ha if size_ha is not None else "—",
             "color": color,
         })
 
-    # --- Hard clamp map to Acadian region + NL/Labrador
-    # (west, south, east, north) degrees
-    BBOX = (-71.5, 42.5, -52.0, 59.0)
+    # -------- Region clamp + “outside” dim
+    # Province bounds (already defined above as PROVINCE_BOUNDS)
+    _west  = min(b["west"]  for b in PROVINCE_BOUNDS.values())
+    _south = min(b["south"] for b in PROVINCE_BOUNDS.values())
+    _east  = max(b["east"]  for b in PROVINCE_BOUNDS.values())
+    _north = max(b["north"] for b in PROVINCE_BOUNDS.values())
+    BBOX = (_west, _south, _east, _north)
+
+    # Mask that dims everything outside our region (world polygon with a “hole”)
+    mask_geojson = {
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "properties": {},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [
+                    [[-180, -90], [ 180, -90], [ 180, 90], [-180, 90], [-180, -90]],  # outer world ring
+                    [[BBOX[0], BBOX[1]], [BBOX[0], BBOX[3]], [BBOX[2], BBOX[3]], [BBOX[2], BBOX[1]], [BBOX[0], BBOX[1]]]
+                ]
+            }
+        }]
+    }
+    mask_layer = pdk.Layer(
+        "GeoJsonLayer",
+        data=mask_geojson,
+        stroked=False,
+        filled=True,
+        get_fill_color=[255, 255, 255, 150],  # semi-opaque white; dims outside the box
+        pickable=False,
+    )
+
+    # Nice to have: draw simple rectangle “borders” for the four provinces (approx)
+    border_paths = []
+    for prov, b in PROVINCE_BOUNDS.items():
+        rect = [
+            [b["lon"] if "lon" in b else b["west"], b["south"]],
+            [b["west"], b["north"]],
+            [b["east"], b["north"]],
+            [b["east"], b["south"]],
+            [b["west"], b["south"]],
+        ]
+        border_paths.append({"path": [[p[0], p[1]] for p in rect]})
+    borders = pdk.Layer(
+        "PathLayer",
+        data=border_paths,
+        get_path="path",
+        get_width=2,
+        get_color=[255, 255, 255],
+        width_min_pixels=1,
+        pickable=False,
+    )
+
+    # Map controller: clamp panning/zoom to region
     controller = {
         "dragRotate": False,
-        "minZoom": 5.0,   # stops zooming way out
+        "minZoom": 5.2,
         "maxZoom": 11,
-        "bounds": [[BBOX[0], BBOX[1]], [BBOX[2], BBOX[3]]],  # deck.gl bounds clamp
+        "bounds": [[BBOX[0], BBOX[1]], [BBOX[2], BBOX[3]]],
     }
+
+    # Choose a satellite basemap if a Mapbox token is available; otherwise fall back.
+    map_style = "mapbox://styles/mapbox/satellite-streets-v12" if (
+        os.getenv("MAPBOX_API_KEY")
+        or os.getenv("MAPBOX_TOKEN")
+        or (hasattr(st, "secrets") and ("MAPBOX_API_KEY" in st.secrets or "MAPBOX_TOKEN" in st.secrets))
+    ) else None
 
     col_map, col_side = st.columns([3, 2], gap="large")
 
-    # ---------- RIGHT: Fire finder & stats (no ellipsis) ----------
+    # ---------- RIGHT: Fire finder (fixes NS IDs like 10-025-2025) ----------
     with col_side:
         st.markdown("### Find by Fire ID")
-        fire_id_in = st.text_input("Fire ID (e.g. 68622)", key="map_fire_id")
+        in_id = st.text_input("Fire ID (e.g. 68622)", key="map_fire_id")
 
-        picked: Optional[Dict[str, Any]] = None
+        picked = st.session_state.get("selected_fire") or None
         if st.button("Get Brief", type="primary"):
-            fid = re.sub(r"\D", "", fire_id_in or "")
-            picked = next(
-                (x for x in fires_list if str(x.get("name")) == fid or str(x.get("id")) == fid),
-                None
-            )
+            want = _norm_id(in_id)
+            picked = next((r for r in map_rows if r["id_norm"] == want), None)
             st.session_state["selected_fire"] = picked or {}
 
-        if not picked:
-            picked = st.session_state.get("selected_fire") or None
-
-        # helper to render big, non-truncated values
+        # pretty stat renderer (no ellipses)
         def _stat(label: str, value: str):
             st.markdown(
                 f"""
@@ -774,35 +831,20 @@ with t2:
             )
 
         if picked:
-            ctrl_txt = str(picked.get("control") or picked.get("status") or "—")
-            try:
-                size_txt = f'{float(picked.get("size_ha") or 0):,.0f}'
-            except Exception:
-                size_txt = str(picked.get("size_ha") or "—")
-            start_txt = str(picked.get("started") or "—")
-
             st.markdown("#### Selected Fire")
-            _stat("Control", ctrl_txt)
-            _stat("Size (ha)", size_txt)
-            _stat("Started", start_txt)
+            _stat("Control", str(picked.get("control") or "—"))
+            _stat("Size (ha)", f'{picked["size_ha"]:,.0f}' if isinstance(picked["size_ha"], (int, float)) else str(picked["size_ha"]))
+            _stat("Started", next((str(f.get("started") or "—") for f in fires_list if _norm_id(f.get("name") or f.get("id")) == picked["id_norm"]), "—"))
             st.write(
-                f"- **ID**: {picked.get('name') or picked.get('id') or '—'}\n"
-                f"- **Agency**: {(picked.get('agency') or '—').upper()}\n"
-                f"- **Location**: {picked.get('lat')}, {picked.get('lon')}"
+                f'- **ID**: {picked.get("name")}\n'
+                f'- **Agency**: {next(((f.get("agency") or "—").upper() for f in fires_list if _norm_id(f.get("name") or f.get("id")) == picked["id_norm"]), "—")}\n'
+                f'- **Location**: {picked["lat"]}, {picked["lon"]}'
             )
 
-    # ---------- LEFT: Map (clamped bounds) ----------
-    # decide center: selected fire if any, otherwise the mean of all
+    # ---------- LEFT: Map ----------
+    # Center on selection if present; otherwise center on mean of all points
     if picked:
-        try:
-            v_lat = float(picked.get("lat")); v_lon = float(picked.get("lon"))
-            view = pdk.ViewState(latitude=v_lat, longitude=v_lon, zoom=8)
-        except Exception:
-            view = pdk.ViewState(
-                latitude=sum(r["lat"] for r in map_rows)/len(map_rows),
-                longitude=sum(r["lon"] for r in map_rows)/len(map_rows),
-                zoom=5.8,
-            )
+        view = pdk.ViewState(latitude=float(picked["lat"]), longitude=float(picked["lon"]), zoom=8)
     else:
         view = pdk.ViewState(
             latitude=sum(r["lat"] for r in map_rows)/len(map_rows),
@@ -810,7 +852,6 @@ with t2:
             zoom=5.8,
         )
 
-    # Base layer: all fires (status-colored)
     all_layer = pdk.Layer(
         "ScatterplotLayer",
         data=map_rows,
@@ -821,32 +862,25 @@ with t2:
         radius_max_pixels=40,
         pickable=True,
     )
-    layers = [all_layer]
+    layers = [mask_layer, all_layer, borders]
 
-    # Selection highlight: WHITE dot with BLACK ring (not to be confused with “Unknown” grey)
+    # Selection highlight: white center + black ring (not to be confused with grey “Unknown”)
     if picked:
-        try:
-            sel = [{
-                "lat": float(picked["lat"]),
-                "lon": float(picked["lon"]),
-                "name": picked.get("name") or picked.get("id") or "(id?)",
-            }]
-            sel_layer = pdk.Layer(
+        layers.append(
+            pdk.Layer(
                 "ScatterplotLayer",
-                data=sel,
+                data=[picked],
                 get_position=["lon", "lat"],
-                get_fill_color=[255, 255, 255],   # white center
+                get_fill_color=[255, 255, 255],
                 get_radius=3800,
                 radius_min_pixels=6,
                 radius_max_pixels=60,
                 stroked=True,
-                get_line_color=[0, 0, 0],        # black ring
+                get_line_color=[0, 0, 0],
                 line_width_min_pixels=2,
                 pickable=False,
             )
-            layers.append(sel_layer)
-        except Exception:
-            pass
+        )
 
     with col_map:
         st.pydeck_chart(
@@ -855,12 +889,11 @@ with t2:
                 initial_view_state=view,
                 views=[pdk.View(type="MapView", controller=controller)],
                 tooltip={"html": "<b>{name}</b><br/>{control}<br/>{size_ha} ha"},
-                map_style=None,
+                map_style=map_style,
             ),
             use_container_width=True,
         )
 
-        # Clear, non-misleading legend:
         st.markdown(
             """
             <div style="margin-top:.5rem;font-size:0.95rem;">
