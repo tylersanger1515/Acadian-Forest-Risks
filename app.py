@@ -13,7 +13,7 @@ IMG_PATH = "assets/images/fokabs image.jpg"
 PAGE_ICON = IMG_PATH if os.path.exists(IMG_PATH) else "🌲"
 
 st.set_page_config(
-    page_title="SAFER — Sustainable Acadian Forests & Environmental Risks",
+    page_title="SAFER — Sustainable Acadian Fires & Emergency Risks",
     page_icon=PAGE_ICON,
     layout="wide",
 )
@@ -715,9 +715,9 @@ with t1:
         st.divider()
         st.markdown("#### Safety check (40 km)")
         loc_in = st.text_input(
-            "Your community or coordinates",
+            "Your community or coordinates. TIP Use postal code for best accuracy",
             placeholder=(
-                "e.g. Halifax NS  |  Moncton  |  44.65,-63.57  • Tip: include your postal code for best accuracy (e.g. B3H 1X1)"
+                "e.g. Halifax NS  |  Moncton  |  44.65,-63.57"
             ),
             key="safety_place",
         )
