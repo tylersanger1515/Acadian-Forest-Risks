@@ -709,6 +709,7 @@ with t2:
 
     # --- helpers
     def _norm_id(x: Any) -> str:
+        # lets "10-025-2025" work by matching digits only
         return re.sub(r"\D", "", str(x or ""))
 
     def _as_float(v, default=None):
@@ -725,7 +726,7 @@ with t2:
         if lat is None or lon is None:
             continue
         ctrl = f.get("control") or f.get("status") or ""
-        color = _status_to_color(ctrl)
+        color = _status_to_color(ctrl)  # reuses helper from Tab 1
         size_ha = _as_float(f.get("size_ha"))
         map_rows.append({
             "lat": lat,
@@ -738,7 +739,7 @@ with t2:
         })
 
     # -------- Region clamp + “outside” dim
-    # Province bounds (already defined above as PROVINCE_BOUNDS)
+    # (PROVINCE_BOUNDS exists above; uses NB/NS/PE/NL)
     _west  = min(b["west"]  for b in PROVINCE_BOUNDS.values())
     _south = min(b["south"] for b in PROVINCE_BOUNDS.values())
     _east  = max(b["east"]  for b in PROVINCE_BOUNDS.values())
@@ -754,7 +755,7 @@ with t2:
             "geometry": {
                 "type": "Polygon",
                 "coordinates": [
-                    [[-180, -90], [ 180, -90], [ 180, 90], [-180, 90], [-180, -90]],  # outer world ring
+                    [[-180, -90], [180, -90], [180, 90], [-180, 90], [-180, -90]],  # whole world
                     [[BBOX[0], BBOX[1]], [BBOX[0], BBOX[3]], [BBOX[2], BBOX[3]], [BBOX[2], BBOX[1]], [BBOX[0], BBOX[1]]]
                 ]
             }
@@ -765,21 +766,21 @@ with t2:
         data=mask_geojson,
         stroked=False,
         filled=True,
-        get_fill_color=[255, 255, 255, 150],  # semi-opaque white; dims outside the box
+        get_fill_color=[255, 255, 255, 150],  # dim outside with semi-opaque white
         pickable=False,
     )
 
-    # Nice to have: draw simple rectangle “borders” for the four provinces (approx)
+    # Thin rectangle “borders” for the four provinces (approx)
     border_paths = []
-    for prov, b in PROVINCE_BOUNDS.items():
+    for b in PROVINCE_BOUNDS.values():
         rect = [
-            [b["lon"] if "lon" in b else b["west"], b["south"]],
+            [b["west"], b["south"]],
             [b["west"], b["north"]],
             [b["east"], b["north"]],
             [b["east"], b["south"]],
             [b["west"], b["south"]],
         ]
-        border_paths.append({"path": [[p[0], p[1]] for p in rect]})
+        border_paths.append({"path": rect})
     borders = pdk.Layer(
         "PathLayer",
         data=border_paths,
@@ -798,16 +799,19 @@ with t2:
         "bounds": [[BBOX[0], BBOX[1]], [BBOX[2], BBOX[3]]],
     }
 
-    # Choose a satellite basemap if a Mapbox token is available; otherwise fall back.
-    map_style = "mapbox://styles/mapbox/satellite-streets-v12" if (
-        os.getenv("MAPBOX_API_KEY")
-        or os.getenv("MAPBOX_TOKEN")
-        or (hasattr(st, "secrets") and ("MAPBOX_API_KEY" in st.secrets or "MAPBOX_TOKEN" in st.secrets))
-    ) else None
+    # Satellite basemap when a Mapbox token is present (see notes below)
+    mapbox_token = (
+        st.secrets.get("MAPBOX_TOKEN", "")
+        or st.secrets.get("MAPBOX_API_KEY", "")
+        or os.getenv("MAPBOX_TOKEN", "")
+        or os.getenv("MAPBOX_API_KEY", "")
+        or os.getenv("MAPBOX_ACCESS_TOKEN", "")
+    )
+    map_style = "mapbox://styles/mapbox/satellite-streets-v12" if mapbox_token else None
 
     col_map, col_side = st.columns([3, 2], gap="large")
 
-    # ---------- RIGHT: Fire finder (fixes NS IDs like 10-025-2025) ----------
+    # ---------- RIGHT: Fire finder ----------
     with col_side:
         st.markdown("### Find by Fire ID")
         in_id = st.text_input("Fire ID (e.g. 68622)", key="map_fire_id")
@@ -818,7 +822,6 @@ with t2:
             picked = next((r for r in map_rows if r["id_norm"] == want), None)
             st.session_state["selected_fire"] = picked or {}
 
-        # pretty stat renderer (no ellipses)
         def _stat(label: str, value: str):
             st.markdown(
                 f"""
@@ -834,15 +837,15 @@ with t2:
             st.markdown("#### Selected Fire")
             _stat("Control", str(picked.get("control") or "—"))
             _stat("Size (ha)", f'{picked["size_ha"]:,.0f}' if isinstance(picked["size_ha"], (int, float)) else str(picked["size_ha"]))
-            _stat("Started", next((str(f.get("started") or "—") for f in fires_list if _norm_id(f.get("name") or f.get("id")) == picked["id_norm"]), "—"))
-            st.write(
-                f'- **ID**: {picked.get("name")}\n'
-                f'- **Agency**: {next(((f.get("agency") or "—").upper() for f in fires_list if _norm_id(f.get("name") or f.get("id")) == picked["id_norm"]), "—")}\n'
-                f'- **Location**: {picked["lat"]}, {picked["lon"]}'
-            )
+            # fetch extra fields from original list
+            fid = picked["id_norm"]
+            src = next((f for f in fires_list if _norm_id(f.get("name") or f.get("id")) == fid), {})
+            _stat("Started", str(src.get("started") or "—"))
+            st.write(f'- **ID**: {picked.get("name")}\n'
+                     f'- **Agency**: {(src.get("agency") or "—").upper()}\n'
+                     f'- **Location**: {picked["lat"]}, {picked["lon"]}')
 
     # ---------- LEFT: Map ----------
-    # Center on selection if present; otherwise center on mean of all points
     if picked:
         view = pdk.ViewState(latitude=float(picked["lat"]), longitude=float(picked["lon"]), zoom=8)
     else:
@@ -864,7 +867,7 @@ with t2:
     )
     layers = [mask_layer, all_layer, borders]
 
-    # Selection highlight: white center + black ring (not to be confused with grey “Unknown”)
+    # Selection highlight: white center + black ring (distinct from gray Unknown)
     if picked:
         layers.append(
             pdk.Layer(
@@ -890,6 +893,7 @@ with t2:
                 views=[pdk.View(type="MapView", controller=controller)],
                 tooltip={"html": "<b>{name}</b><br/>{control}<br/>{size_ha} ha"},
                 map_style=map_style,
+                mapbox_key=mapbox_token if mapbox_token else None,
             ),
             use_container_width=True,
         )
