@@ -101,7 +101,7 @@ def _fokabs_logo(height: int = 44) -> str:
 _HEADER = (
     '<div class="s-header"><div class="s-title">'
     f'<span class="s-acronym">SAFER</span>{_fokabs_logo(44)}'
-    "</div><div class=\"s-sub\">Sustainable Acadian Forests &amp; Environmental Risks</div>"
+    "</div><div class=\"s-sub\">Sustainable Acadian Fires &amp; Emergency Risks</div>"
     '<div class="s-tag">Monitor, Maintain, Move Forward</div></div>'
 )
 
