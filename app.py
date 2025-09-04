@@ -287,63 +287,6 @@ with t1:
         if ss.get("fires_html"):
             components.html(ss["fires_html"], height=820, scrolling=True)
 
-        st.divider()
-        st.markdown("**Map of active fires (colored pins)**")
-        # Build map data from payload if present
-        fires_list: List[Dict[str, Any]] = []
-        payload = ss.get("fires_payload") or {}
-        if isinstance(payload, dict):
-            if isinstance(payload.get("fires"), list):
-                fires_list = payload["fires"]
-            elif isinstance(payload.get("items"), list):
-                fires_list = payload["items"]
-        # Normalize & filter for mappable points
-        map_rows = []
-        for f in fires_list or []:
-            try:
-                lat = float(f.get("lat"))
-                lon = float(f.get("lon"))
-            except Exception:
-                continue
-            ctrl = f.get("control") or f.get("status") or ""
-            color = _status_to_color(ctrl)
-            size_ha = f.get("size_ha")
-            try:
-                size_ha = float(size_ha) if size_ha is not None else None
-            except Exception:
-                size_ha = None
-            map_rows.append({
-                "lat": lat,
-                "lon": lon,
-                "name": f.get("name") or f.get("id") or "(id?)",
-                "control": ctrl,
-                "size_ha": size_ha if size_ha is not None else "—",
-                "color": color,
-            })
-        if map_rows:
-            center_lat = sum(r["lat"] for r in map_rows) / len(map_rows)
-            center_lon = sum(r["lon"] for r in map_rows) / len(map_rows)
-            view = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=5.8)
-            layer = pdk.Layer(
-                "ScatterplotLayer",
-                data=map_rows,
-                get_position=["lon", "lat"],
-                get_fill_color="color",
-                get_radius=1600,
-                radius_min_pixels=4,
-                radius_max_pixels=40,
-                pickable=True,
-            )
-            deck = pdk.Deck(
-                layers=[layer],
-                initial_view_state=view,
-                tooltip={"text": "{name}\n{control}\n{size_ha} ha"},
-            )
-            st.pydeck_chart(deck)
-            st.caption("Legend: 🔴 Out of Control · 🟡 Being Held · 🟢 Under Control · ⚪ Unknown")
-        else:
-            st.caption("Fetch fires to populate the map.")
-
     # ---------------- RIGHT: Q&A ----------------
     with right:
         st.markdown("#### Ask about today’s fires")
@@ -750,137 +693,148 @@ with t1:
                         st.markdown(fmt_fire_line(f, show_km=True))
                     _guidance_block()
 
-# ===== TAB 2: INCIDENT BRIEF =====
+# ===== TAB 2: FIRE MAP & LOCATOR =====
 with t2:
-    st.subheader("Incident Brief")
+    st.subheader("Fire Map & Locator")
 
-    if not risk_url:
-        st.warning("Incident brief webhook is not configured. Set N8N_RISK_URL in App → Settings → Secrets.")
+    # Pull fires from the payload fetched in Tab 1
+    payload = st.session_state.get("fires_payload") or {}
+    fires_list: List[Dict[str, Any]] = []
+    if isinstance(payload, dict):
+        if isinstance(payload.get("fires"), list):
+            fires_list = payload["fires"]
+        elif isinstance(payload.get("items"), list):
+            fires_list = payload["items"]
+
+    if not fires_list:
+        st.info("Click **Fetch Active Fires** in the first tab to load today’s fires.")
     else:
-        ss = st.session_state
-        mode = st.radio("Find by", ["Fire ID", "Location"], horizontal=True, key="brief_mode")
-        with st.form("brief_form", clear_on_submit=False):
-            payload: Optional[Dict[str, Any]] = None
-            if mode == "Fire ID":
-                fire_id = st.text_input("Fire ID (e.g. 68622)", key="brief_id")
-                if fire_id.strip():
-                    payload = {"id": re.sub(r"\D", "", fire_id.strip())}
-            else:
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    lat = st.number_input("Lat", value=47.4851, format="%.6f")
-                with c2:
-                    lon = st.number_input("Lon", value=-65.5618, format="%.6f")
-                with c3:
-                    radius = st.number_input("Radius (km)", min_value=1, value=30, step=1)
-                payload = {"lat": float(lat), "lon": float(lon), "radius_km": int(radius)}
-            submitted = st.form_submit_button("Get Brief", type="primary")
-
-        if submitted and payload:
+        # Build rows for the map (colored by control status)
+        map_rows: List[Dict[str, Any]] = []
+        for f in fires_list:
             try:
-                data = post_json(risk_url, payload, shared_secret or None, timeout=timeout_sec)
-                incident = (data or {}).get("incident") or {}
-                brief_md = (data or {}).get("brief_md") or "_No brief returned_"
-                ss["brief_data"], ss["brief_incident"], ss["brief_md"] = data, incident, brief_md
-            except requests.HTTPError as e:
-                st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
-            except Exception as e:
-                st.error(f"Error fetching brief: {e}")
-        elif submitted and not payload:
-            st.warning("Enter a Fire ID or a location first.")
-
-        data = ss.get("brief_data")
-        incident = ss.get("brief_incident", {})
-        brief_md = ss.get("brief_md")
-
-        if data and incident and brief_md:
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Tier", data.get("tier_main", data.get("tier", "—")), data.get("tier_sub", ""))
-            m2.metric("Control", incident.get("control", "—"))
-            try:
-                m3.metric("Size (ha)", int(incident.get("size_ha") or 0))
+                lat = float(f.get("lat")); lon = float(f.get("lon"))
             except Exception:
-                m3.metric("Size (ha)", incident.get("size_ha", "—"))
-            m4.metric("Started", incident.get("started", "—"))
+                continue
+            ctrl = f.get("control") or f.get("status") or ""
+            color = _status_to_color(ctrl)
+            try:
+                size_ha = float(f.get("size_ha")) if f.get("size_ha") is not None else None
+            except Exception:
+                size_ha = None
+            map_rows.append({
+                "lat": lat,
+                "lon": lon,
+                "name": f.get("name") or f.get("id") or "(id?)",
+                "control": ctrl,
+                "size_ha": size_ha if size_ha is not None else "—",
+                "color": color,
+            })
 
-            st.markdown(brief_md)
+        # Find a specific fire by ID (centers the map and highlights it)
+        col_map, col_side = st.columns([3, 2], gap="large")
 
-            if "lat" in incident and "lon" in incident:
-                st.markdown("**Map**")
-                view = pdk.ViewState(latitude=float(incident["lat"]), longitude=float(incident["lon"]), zoom=8, pitch=0)
-                _col = _status_to_color(incident.get("control"))
-                layer = pdk.Layer(
-                    "ScatterplotLayer",
-                    data=[{"lat": incident["lat"], "lon": incident["lon"], "color": _col}],
-                    get_position=["lon", "lat"],
-                    get_fill_color="color",
-                    get_radius=1600,
-                    radius_min_pixels=6,
-                    radius_max_pixels=60,
-                    pickable=False,
+        with col_side:
+            st.markdown("### Find by Fire ID")
+            fire_id_in = st.text_input("Fire ID (e.g. 68622)", key="map_fire_id")
+            picked: Optional[Dict[str, Any]] = None
+            if st.button("Get Brief", type="primary"):
+                fid = re.sub(r"\D", "", fire_id_in or "")
+                picked = next(
+                    (x for x in fires_list
+                     if str(x.get("name")) == fid or str(x.get("id")) == fid),
+                    None
                 )
-                st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view))
+                st.session_state["selected_fire"] = picked or {}
 
-                # Optional: Nearest places (Google Places)
-                def _places_nearby(lat: float, lon: float, radius_m: int, api_key: str, types: Tuple[str, ...] = ("locality", "sublocality", "neighborhood")) -> List[Dict[str, Any]]:
-                    url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
-                    out: List[Dict[str, Any]] = []
-                    seen: set = set()
-                    for t in types:
-                        params = {"location": f"{lat},{lon}", "radius": int(radius_m), "type": t, "key": api_key}
-                        r = requests.get(url, params=params, timeout=20)
-                        r.raise_for_status()
-                        for it in (r.json() or {}).get("results", []):
-                            pid = it.get("place_id")
-                            if not pid or pid in seen:
-                                continue
-                            seen.add(pid)
-                            loc = (it.get("geometry") or {}).get("location") or {}
-                            plat, plon = float(loc.get("lat", 0)), float(loc.get("lng", 0))
-                            # haversine
-                            R = 6371.0; p = math.pi/180.0
-                            dlat = (plat - float(lat)) * p
-                            dlon = (plon - float(lon)) * p
-                            a = math.sin(dlat/2)**2 + math.cos(float(lat)*p)*math.cos(plat*p)*math.sin(dlon/2)**2
-                            dist_km = 2 * R * math.asin(math.sqrt(a))
-                            out.append({"name": it.get("name") or "(unnamed)", "types": it.get("types") or [], "lat": plat, "lon": plon, "distance_km": round(dist_km, 2)})
-                    out.sort(key=lambda x: x["distance_km"])
-                    return out
+            # Restore selection if we already chose one
+            if not picked:
+                picked = st.session_state.get("selected_fire") or None
 
-                st.divider()
-                st.markdown("**Nearest places (Google)**")
-                if not google_key:
-                    st.info("Add GOOGLE_GEOCODING_API_KEY in App → Settings → Secrets to enable this.")
-                else:
-                    c1, c2 = st.columns([2, 2])
-                    with c1:
-                        radius_choices = st.multiselect("Show closest within (km)", options=[1, 5, 10, 20, 30, 40, 80], default=[20, 40])
-                    with c2:
-                        type_choices = st.multiselect("Place types", options=["locality", "sublocality", "neighborhood", "point_of_interest", "establishment"], default=["locality", "sublocality", "neighborhood"])
-                    if st.button("Find nearest places"):
-                        lat_i, lon_i = float(incident["lat"]), float(incident["lon"])
-                        max_r = (max(radius_choices) if radius_choices else 40) * 1000
-                        places = _places_nearby(lat_i, lon_i, int(max_r), google_key, tuple(type_choices))
-                        if not places:
-                            st.info("No places returned by Google for these settings.")
-                        else:
-                            for R in sorted(radius_choices):
-                                subset = [p for p in places if p["distance_km"] <= float(R)]
-                                st.markdown(f"**≤ {R} km** — {len(subset)} place(s)")
-                                if subset:
-                                    for p in subset[:12]:
-                                        t = ", ".join(p.get("types", [])[:3])
-                                        st.write(f"- {p['name']} — {p['distance_km']:.2f} km" + (f" · _{t}_" if t else ""))
-                                else:
-                                    st.caption("none")
+            # Show metrics for the selected fire (if any)
+            if picked:
+                st.markdown("#### Selected Fire")
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Control", str(picked.get("control") or picked.get("status") or "—"))
+                try:
+                    c2.metric("Size (ha)", f'{float(picked.get("size_ha") or 0):,.0f}')
+                except Exception:
+                    c2.metric("Size (ha)", str(picked.get("size_ha") or "—"))
+                c3.metric("Started", str(picked.get("started") or "—"))
 
-            # Quick links / details
-            cA, cB = st.columns(2)
-            if (data or {}).get("map_link"):
-                cA.link_button("Open in Google Maps", data["map_link"])
-            with cB:
-                with st.popover("Details"):
-                    st.json(incident)
+                # Small detail list
+                st.write(
+                    f"- **ID**: {picked.get('name') or picked.get('id') or '—'}\n"
+                    f"- **Agency**: {(picked.get('agency') or '—').upper()}\n"
+                    f"- **Location**: {picked.get('lat')}, {picked.get('lon')}"
+                )
+
+        # Decide the view: if we have a selected fire, center on it; else center on mean
+        if map_rows:
+            if picked:
+                try:
+                    v_lat = float(picked.get("lat")); v_lon = float(picked.get("lon"))
+                    view = pdk.ViewState(latitude=v_lat, longitude=v_lon, zoom=8)
+                except Exception:
+                    view = pdk.ViewState(
+                        latitude=sum(r["lat"] for r in map_rows) / len(map_rows),
+                        longitude=sum(r["lon"] for r in map_rows) / len(map_rows),
+                        zoom=5.8,
+                    )
+            else:
+                view = pdk.ViewState(
+                    latitude=sum(r["lat"] for r in map_rows) / len(map_rows),
+                    longitude=sum(r["lon"] for r in map_rows) / len(map_rows),
+                    zoom=5.8,
+                )
+
+            # Base layer: all fires
+            all_layer = pdk.Layer(
+                "ScatterplotLayer",
+                data=map_rows,
+                get_position=["lon", "lat"],
+                get_fill_color="color",
+                get_radius=1600,
+                radius_min_pixels=4,
+                radius_max_pixels=40,
+                pickable=True,
+            )
+
+            layers = [all_layer]
+
+            # Highlight layer for the selected fire (bigger with white stroke)
+            if picked:
+                try:
+                    sel = [{
+                        "lat": float(picked["lat"]),
+                        "lon": float(picked["lon"]),
+                        "name": picked.get("name") or picked.get("id") or "(id?)",
+                    }]
+                    sel_layer = pdk.Layer(
+                        "ScatterplotLayer",
+                        data=sel,
+                        get_position=["lon", "lat"],
+                        get_fill_color=[255, 255, 255],
+                        get_radius=3800,
+                        radius_min_pixels=6,
+                        radius_max_pixels=60,
+                        pickable=False,
+                        stroked=True,
+                        get_line_color=[0, 0, 0],
+                        line_width_min_pixels=2,
+                    )
+                    layers.append(sel_layer)
+                except Exception:
+                    pass
+
+            with col_map:
+                st.pydeck_chart(pdk.Deck(
+                    layers=layers,
+                    initial_view_state=view,
+                    tooltip={"text": "{name}\n{control}\n{size_ha} ha"},
+                    map_style=None  # use default dark style; set your style string here if you prefer
+                ))
+                st.caption("Legend: 🔴 Out of Control · 🟡 Being Held · 🟢 Under Control · ⚪ Unknown")
 
 # ===== TAB 3: SAFER Fire Alert =====
 with t3:
