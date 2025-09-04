@@ -710,7 +710,7 @@ with t2:
         st.info("Click **Fetch Active Fires** in the first tab to load today’s fires.")
         st.stop()
 
-    # --- Build rows for the map (colored by control status)
+    # --- rows for the map (colored by control status)
     map_rows: List[Dict[str, Any]] = []
     for f in fires_list:
         try:
@@ -718,7 +718,7 @@ with t2:
         except Exception:
             continue
         ctrl = f.get("control") or f.get("status") or ""
-        color = _status_to_color(ctrl)
+        color = _status_to_color(ctrl)  # 🔴🟡🟢, grey for unknown
         try:
             size_ha = float(f.get("size_ha")) if f.get("size_ha") is not None else None
         except Exception:
@@ -732,19 +732,19 @@ with t2:
             "color": color,
         })
 
-    # --- Hard clamp to Acadian region + NL/Labrador
-    #     west, south, east, north (deg)
-    BBOX = (-71.0, 42.6, -52.0, 57.8)   # tweak if you want a tighter/looser box
+    # --- Hard clamp map to Acadian region + NL/Labrador
+    # (west, south, east, north) degrees
+    BBOX = (-71.5, 42.5, -52.0, 59.0)
     controller = {
         "dragRotate": False,
-        "minZoom": 4.7,         # prevents zooming too far out
-        "maxZoom": 10,          # sane upper bound
-        "bounds": [[BBOX[0], BBOX[1]], [BBOX[2], BBOX[3]]],  # deck.gl MapController bounds
+        "minZoom": 5.0,   # stops zooming way out
+        "maxZoom": 11,
+        "bounds": [[BBOX[0], BBOX[1]], [BBOX[2], BBOX[3]]],  # deck.gl bounds clamp
     }
 
     col_map, col_side = st.columns([3, 2], gap="large")
 
-    # ---------- RIGHT: finder & stats (no truncation) ----------
+    # ---------- RIGHT: Fire finder & stats (no ellipsis) ----------
     with col_side:
         st.markdown("### Find by Fire ID")
         fire_id_in = st.text_input("Fire ID (e.g. 68622)", key="map_fire_id")
@@ -758,11 +758,10 @@ with t2:
             )
             st.session_state["selected_fire"] = picked or {}
 
-        # Restore selection if we already chose one
         if not picked:
             picked = st.session_state.get("selected_fire") or None
 
-        # Present stats WITHOUT ellipsis by using custom markup instead of st.metric
+        # helper to render big, non-truncated values
         def _stat(label: str, value: str):
             st.markdown(
                 f"""
@@ -792,26 +791,26 @@ with t2:
                 f"- **Location**: {picked.get('lat')}, {picked.get('lon')}"
             )
 
-    # ---------- LEFT: map (clamped bounds) ----------
-    # Decide the view: if we have a selected fire, center on it; else center on mean
+    # ---------- LEFT: Map (clamped bounds) ----------
+    # decide center: selected fire if any, otherwise the mean of all
     if picked:
         try:
             v_lat = float(picked.get("lat")); v_lon = float(picked.get("lon"))
             view = pdk.ViewState(latitude=v_lat, longitude=v_lon, zoom=8)
         except Exception:
             view = pdk.ViewState(
-                latitude=sum(r["lat"] for r in map_rows) / len(map_rows),
-                longitude=sum(r["lon"] for r in map_rows) / len(map_rows),
+                latitude=sum(r["lat"] for r in map_rows)/len(map_rows),
+                longitude=sum(r["lon"] for r in map_rows)/len(map_rows),
                 zoom=5.8,
             )
     else:
         view = pdk.ViewState(
-            latitude=sum(r["lat"] for r in map_rows) / len(map_rows),
-            longitude=sum(r["lon"] for r in map_rows) / len(map_rows),
+            latitude=sum(r["lat"] for r in map_rows)/len(map_rows),
+            longitude=sum(r["lon"] for r in map_rows)/len(map_rows),
             zoom=5.8,
         )
 
-    # Base layer: all fires
+    # Base layer: all fires (status-colored)
     all_layer = pdk.Layer(
         "ScatterplotLayer",
         data=map_rows,
@@ -824,7 +823,7 @@ with t2:
     )
     layers = [all_layer]
 
-    # Highlight layer for the selected fire (bigger, white fill + black ring)
+    # Selection highlight: WHITE dot with BLACK ring (not to be confused with “Unknown” grey)
     if picked:
         try:
             sel = [{
@@ -836,14 +835,14 @@ with t2:
                 "ScatterplotLayer",
                 data=sel,
                 get_position=["lon", "lat"],
-                get_fill_color=[255, 255, 255],
+                get_fill_color=[255, 255, 255],   # white center
                 get_radius=3800,
                 radius_min_pixels=6,
                 radius_max_pixels=60,
-                pickable=False,
                 stroked=True,
-                get_line_color=[0, 0, 0],
+                get_line_color=[0, 0, 0],        # black ring
                 line_width_min_pixels=2,
+                pickable=False,
             )
             layers.append(sel_layer)
         except Exception:
@@ -856,11 +855,25 @@ with t2:
                 initial_view_state=view,
                 views=[pdk.View(type="MapView", controller=controller)],
                 tooltip={"html": "<b>{name}</b><br/>{control}<br/>{size_ha} ha"},
-                map_style=None,  # keep your preferred style; set a string if needed
+                map_style=None,
             ),
             use_container_width=True,
         )
-        st.caption("Legend: 🔴 Out of Control · 🟡 Being Held · 🟢 Under Control · ⚪ Unknown")
+
+        # Clear, non-misleading legend:
+        st.markdown(
+            """
+            <div style="margin-top:.5rem;font-size:0.95rem;">
+              Legend:
+              <span style="color:#dc2626">●</span> Out of Control &nbsp;·&nbsp;
+              <span style="color:#eab308">●</span> Being Held &nbsp;·&nbsp;
+              <span style="color:#10b981">●</span> Under Control &nbsp;·&nbsp;
+              <span style="color:#6b7280">●</span> Unknown &nbsp;·&nbsp;
+              <span style="color:#000;">◯</span> Selected fire
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 # ===== TAB 3: SAFER Fire Alert =====
 with t3:
