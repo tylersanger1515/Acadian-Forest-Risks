@@ -708,7 +708,7 @@ with t2:
         st.info("Click **Fetch Active Fires** in the first tab to load today’s fires.")
         st.stop()
 
-    # --- helpers
+    # --- helpers -------------------------------------------------------------
     def _norm_id(x: Any) -> str:
         return re.sub(r"\D", "", str(x or ""))
 
@@ -718,8 +718,27 @@ with t2:
         except Exception:
             return default
 
-    # Build rows for map pins
-    map_rows: List[Dict[str, Any]] = []
+    # hectares -> marker radius (meters)
+    # NOTE: requires `import math` in your imports block.
+    def _radius_from_ha(size_ha: float, k: float = 0.6) -> float:
+        try:
+            if size_ha is None or float(size_ha) <= 0:
+                return 800
+            r_m = math.sqrt((float(size_ha) * 10000.0) / math.pi)  # 1 ha = 10,000 m²
+            return max(600, min(r_m * float(k), 12000))
+        except Exception:
+            return 800
+
+    # Normalize status to buckets for filtering
+    def _status_key(ctrl: Optional[str]) -> str:
+        s = (ctrl or "").lower()
+        if "out" in s:   return "ooc"  # Out of Control
+        if "held" in s:  return "bh"   # Being Held
+        if "under" in s: return "uc"   # Under Control
+        return "unk"                 # Unknown / not reported
+
+    # Build base rows (no radius yet)
+    base_rows: List[Dict[str, Any]] = []
     for f in fires_list:
         lat = _as_float(f.get("lat"))
         lon = _as_float(f.get("lon"))
@@ -728,25 +747,24 @@ with t2:
         ctrl = f.get("control") or f.get("status") or ""
         color = _status_to_color(ctrl)
         size_ha = _as_float(f.get("size_ha"))
-        map_rows.append({
+        base_rows.append({
             "lat": lat,
             "lon": lon,
             "name": f.get("name") or f.get("id") or "(id?)",
             "id_norm": _norm_id(f.get("name") or f.get("id")),
             "control": ctrl,
-            "size_ha": size_ha if size_ha is not None else "—",
+            "status_key": _status_key(ctrl),
+            "size_ha": size_ha if size_ha is not None else 0.0,
             "color": color,
         })
 
-    # -------- Region clamp + “outside” dim
-    # Province bounds (already defined above as PROVINCE_BOUNDS)
+    # -------- Region clamp + “outside” dim ----------------------------------
     _west  = min(b["west"]  for b in PROVINCE_BOUNDS.values())
     _south = min(b["south"] for b in PROVINCE_BOUNDS.values())
     _east  = max(b["east"]  for b in PROVINCE_BOUNDS.values())
     _north = max(b["north"] for b in PROVINCE_BOUNDS.values())
     BBOX = (_west, _south, _east, _north)
 
-    # Mask that dims everything outside our region (world polygon with a “hole”)
     mask_geojson = {
         "type": "FeatureCollection",
         "features": [{
@@ -755,7 +773,7 @@ with t2:
             "geometry": {
                 "type": "Polygon",
                 "coordinates": [
-                    [[-180, -90], [ 180, -90], [ 180, 90], [-180, 90], [-180, -90]],  # outer world ring
+                    [[-180, -90], [180, -90], [180, 90], [-180, 90], [-180, -90]],
                     [[BBOX[0], BBOX[1]], [BBOX[0], BBOX[3]], [BBOX[2], BBOX[3]], [BBOX[2], BBOX[1]], [BBOX[0], BBOX[1]]]
                 ]
             }
@@ -766,21 +784,16 @@ with t2:
         data=mask_geojson,
         stroked=False,
         filled=True,
-        get_fill_color=[255, 255, 255, 150],  # semi-opaque white; dims outside the box
+        get_fill_color=[255, 255, 255, 150],
         pickable=False,
     )
 
-    # Nice to have: draw simple rectangle “borders” for the four provinces (approx)
+    # Province border rectangles (approx)
     border_paths = []
-    for prov, b in PROVINCE_BOUNDS.items():
-        rect = [
-            [b["lon"] if "lon" in b else b["west"], b["south"]],
-            [b["west"], b["north"]],
-            [b["east"], b["north"]],
-            [b["east"], b["south"]],
-            [b["west"], b["south"]],
-        ]
-        border_paths.append({"path": [[p[0], p[1]] for p in rect]})
+    for b in PROVINCE_BOUNDS.values():
+        rect = [[b["west"], b["south"]], [b["west"], b["north"]],
+                [b["east"], b["north"]], [b["east"], b["south"]], [b["west"], b["south"]]]
+        border_paths.append({"path": rect})
     borders = pdk.Layer(
         "PathLayer",
         data=border_paths,
@@ -791,7 +804,6 @@ with t2:
         pickable=False,
     )
 
-    # Map controller: clamp panning/zoom to region
     controller = {
         "dragRotate": False,
         "minZoom": 5.2,
@@ -799,7 +811,6 @@ with t2:
         "bounds": [[BBOX[0], BBOX[1]], [BBOX[2], BBOX[3]]],
     }
 
-    # Choose a satellite basemap if a Mapbox token is available; otherwise fall back.
     map_style = "mapbox://styles/mapbox/satellite-streets-v12" if (
         os.getenv("MAPBOX_API_KEY")
         or os.getenv("MAPBOX_TOKEN")
@@ -808,18 +819,35 @@ with t2:
 
     col_map, col_side = st.columns([3, 2], gap="large")
 
-    # ---------- RIGHT: Fire finder (fixes NS IDs like 10-025-2025) ----------
+    # ---------- RIGHT: Finder + Controls ------------------------------------
     with col_side:
         st.markdown("### Find by Fire ID")
         in_id = st.text_input("Fire ID (e.g. 68622)", key="map_fire_id")
 
         picked = st.session_state.get("selected_fire") or None
         if st.button("Get Brief", type="primary"):
-            want = _norm_id(in_id)
-            picked = next((r for r in map_rows if r["id_norm"] == want), None)
+            want = re.sub(r"\D", "", in_id or "")
+            picked = next((r for r in base_rows if r["id_norm"] == want), None)
             st.session_state["selected_fire"] = picked or {}
 
-        # pretty stat renderer (no ellipses)
+        # Map Options
+        st.markdown("### Map Options")
+        scale_by_size = st.checkbox("Scale dots by size (ha)", value=True)
+        max_ha = max((r["size_ha"] for r in base_rows if isinstance(r["size_ha"], (int, float))), default=0.0)
+        min_size = st.slider("Minimum size (ha) to show", 0.0, float(max(max_ha, 10.0)), 0.0, step=1.0)
+        exaggeration = st.slider("Size exaggeration", 0.2, 1.5, 0.6, step=0.05)
+
+        # NEW: Status Filters
+        st.markdown("### Status Filters")
+        show_ooc = st.checkbox("Out of Control", value=True)
+        show_bh  = st.checkbox("Being Held", value=True)
+        show_uc  = st.checkbox("Under Control", value=True)
+        show_unk = st.checkbox("Unknown", value=True)
+        allowed_status = {k for k, v in [
+            ("ooc", show_ooc), ("bh", show_bh), ("uc", show_uc), ("unk", show_unk)
+        ] if v}
+
+        # Stats block for the selected fire
         def _stat(label: str, value: str):
             st.markdown(
                 f"""
@@ -834,16 +862,33 @@ with t2:
         if picked:
             st.markdown("#### Selected Fire")
             _stat("Control", str(picked.get("control") or "—"))
-            _stat("Size (ha)", f'{picked["size_ha"]:,.0f}' if isinstance(picked["size_ha"], (int, float)) else str(picked["size_ha"]))
-            _stat("Started", next((str(f.get("started") or "—") for f in fires_list if _norm_id(f.get("name") or f.get("id")) == picked["id_norm"]), "—"))
+            _stat("Size (ha)", f'{picked["size_ha"]:,.0f}')
+            started_str = next(
+                (str(f.get("started") or "—") for f in fires_list
+                 if re.sub(r"\D","",str(f.get("name") or f.get("id"))) == picked["id_norm"]), "—"
+            )
+            _stat("Started", started_str)
             st.write(
                 f'- **ID**: {picked.get("name")}\n'
-                f'- **Agency**: {next(((f.get("agency") or "—").upper() for f in fires_list if _norm_id(f.get("name") or f.get("id")) == picked["id_norm"]), "—")}\n'
+                f'- **Agency**: {next(((f.get("agency") or "—").upper() for f in fires_list if re.sub(r"\\D","",str(f.get("name") or f.get("id"))) == picked["id_norm"]), "—")}\n'
                 f'- **Location**: {picked["lat"]}, {picked["lon"]}'
             )
 
-    # ---------- LEFT: Map ----------
-    # Center on selection if present; otherwise center on mean of all points
+    # ---------- LEFT: Map ----------------------------------------------------
+    # Apply filters + attach radius
+    map_rows: List[Dict[str, Any]] = []
+    for r in base_rows:
+        # filter by size
+        if isinstance(r["size_ha"], (int, float)) and r["size_ha"] < min_size:
+            continue
+        # filter by status
+        if r.get("status_key") not in allowed_status:
+            continue
+        r2 = dict(r)
+        r2["radius"] = (_radius_from_ha(r["size_ha"], exaggeration) if scale_by_size else 1600)
+        map_rows.append(r2)
+
+    # View
     if picked:
         view = pdk.ViewState(latitude=float(picked["lat"]), longitude=float(picked["lon"]), zoom=8)
     else:
@@ -853,19 +898,20 @@ with t2:
             zoom=5.8,
         )
 
+    # Scatter layer with per-point radius
     all_layer = pdk.Layer(
         "ScatterplotLayer",
         data=map_rows,
         get_position=["lon", "lat"],
         get_fill_color="color",
-        get_radius=1600,
-        radius_min_pixels=4,
-        radius_max_pixels=40,
+        get_radius="radius",
+        radius_min_pixels=3,
+        radius_max_pixels=60,
         pickable=True,
     )
     layers = [mask_layer, all_layer, borders]
 
-    # Selection highlight: white center + black ring (not to be confused with grey “Unknown”)
+    # Selection highlight
     if picked:
         layers.append(
             pdk.Layer(
@@ -895,15 +941,23 @@ with t2:
             use_container_width=True,
         )
 
+        # Legend
         st.markdown(
             """
-            <div style="margin-top:.5rem;font-size:0.95rem;">
-              Legend:
-              <span style="color:#dc2626">●</span> Out of Control &nbsp;·&nbsp;
-              <span style="color:#eab308">●</span> Being Held &nbsp;·&nbsp;
-              <span style="color:#10b981">●</span> Under Control &nbsp;·&nbsp;
-              <span style="color:#6b7280">●</span> Unknown &nbsp;·&nbsp;
-              <span style="color:#000;">◯</span> Selected fire
+            <div style="margin-top:.5rem;font-size:0.95rem;line-height:1.5">
+              <div><b>Legend</b></div>
+              <div>
+                <span style="color:#dc2626">●</span> Out of Control &nbsp;·&nbsp;
+                <span style="color:#eab308">●</span> Being Held &nbsp;·&nbsp;
+                <span style="color:#10b981">●</span> Under Control &nbsp;·&nbsp;
+                <span style="color:#6b7280">●</span> Unknown
+              </div>
+              <div style="margin-top:4px;">
+                <span>Dot size ≈ fire size (ha). Examples:</span>
+                <span style="margin-left:6px">~10 ha = small</span> ·
+                <span>~100 ha = medium</span> ·
+                <span>~1000 ha = large</span>
+              </div>
             </div>
             """,
             unsafe_allow_html=True,
