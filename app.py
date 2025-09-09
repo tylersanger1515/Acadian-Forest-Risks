@@ -821,8 +821,8 @@ with t2:
 
     # ---------- RIGHT: Finder + Controls ------------------------------------
     with col_side:
-        st.markdown("### Find by Fire ID")
-        in_id = st.text_input("Fire ID (e.g. 68622)", key="map_fire_id")
+        st.markdown("### Find by Fire Name")
+        in_id = st.text_input("Fire Name (e.g. 68622)", key="map_fire_id")
 
         picked = st.session_state.get("selected_fire") or None
         if st.button("Get Brief", type="primary"):
