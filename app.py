@@ -952,11 +952,17 @@ with t2:
                 <span style="color:#10b981">●</span> Under Control &nbsp;·&nbsp;
                 <span style="color:#6b7280">●</span> Unknown
               </div>
+
               <div style="margin-top:4px;">
                 <span>Dot size ≈ fire size (ha). Examples:</span>
                 <span style="margin-left:6px">~10 ha = small</span> ·
                 <span>~100 ha = medium</span> ·
                 <span>~1000 ha = large</span>
+              </div>
+
+              <!-- NEW: quick hectare comparison line -->
+              <div style="margin-top:2px;color:#6b7280">
+                1 ha = 10,000 m² ≈ 2.47 acres (≈ a 100 m × 100 m square)
               </div>
             </div>
             """,
