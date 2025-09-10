@@ -969,142 +969,88 @@ with t2:
             unsafe_allow_html=True,
         )
 
-# ---------- Tab 3: SAFER Fire Alert (with Telegram) ----------
-import os, re, json, requests
+# --- TAB 3: SAFER Fire Alert --------------------------------------------------
+
+import os
+import requests
 import streamlit as st
 
-N8N_SUBSCRIBE_URL = os.getenv("N8N_SUBSCRIBE_URL", "").strip()
-BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "SaferAlertsBot").strip() or "SaferAlertsBot"
-USERINFO_BOT = "userinfobot"
-
-BOT_URL = f"https://t.me/{BOT_USERNAME}"
-USERINFO_URL = f"https://t.me/{USERINFO_BOT}"
-
-CHAT_ID_RE = re.compile(r"^\d{5,}$")  # simple numeric check
-
-def _post_json(url: str, payload: dict) -> tuple[bool, str]:
-    try:
-        r = requests.post(url, json=payload, timeout=15)
-        if r.ok:
-            return True, "Subscribed."
-        # try to pass through n8n error text
-        return False, f"{r.status_code}: {r.text[:300]}"
-    except Exception as e:
-        return False, str(e)
+N8N_SUBSCRIBE_URL = st.secrets.get("N8N_SUBSCRIBE_URL") or os.environ.get("N8N_SUBSCRIBE_URL")
+TELEGRAM_BOT_USERNAME = st.secrets.get("TELEGRAM_BOT_USERNAME", "SaferAlertsBot").lstrip("@")
 
 def render_tab_fire_alert():
-    st.header("Be SAFER in the Acadian region with a fire alert response for your home address")
+    st.subheader("Be SAFER in the Acadian region with a fire alert response for your home address")
 
-    if not N8N_SUBSCRIBE_URL:
-        st.warning("Missing N8N_SUBSCRIBE_URL. Set it in your environment so subscriptions can be saved.")
-
-    with st.container():
-        email = st.text_input("Email", placeholder="you@example.com")
+    with st.form("safer_subscribe"):
+        # Email
+        email = st.text_input("Email")
 
         # Channel selection
-        col_radio = st.columns([1])[0]
-        channel_label = col_radio.radio(
+        channel = st.radio(
             "Channel",
             options=["email", "telegram", "both"],
             index=0,
-            format_func=lambda x: {"email": "Email", "telegram": "Telegram", "both": "Both"}[x],
             horizontal=True,
+            format_func=lambda x: x.capitalize(),
+            help="Choose how you want to receive alerts."
         )
 
-        # Telegram-only UI bits
-        chat_id = ""
-        if channel_label in ("telegram", "both"):
+        # Telegram helper inputs if needed
+        telegramChatId = ""
+        if channel in ("telegram", "both"):
             st.markdown("**Telegram Chat ID**")
-            c1, c2, c3 = st.columns([2, 1, 1])
-            with c1:
-                chat_id = st.text_input("Telegram Chat ID", placeholder="e.g. 8436906519", label_visibility="collapsed")
-            with c2:
-                st.link_button("Open bot", BOT_URL, use_container_width=True)
-            with c3:
-                st.link_button("ID helper", USERINFO_URL, use_container_width=True)
-            st.caption(
-                f"In Telegram: tap **Open bot** and press **Start**. "
-                f"If you don't know your Chat ID, open **@{USERINFO_BOT}** and copy the **Id** number it shows."
+            telegramChatId = st.text_input(
+                "Telegram Chat ID",
+                placeholder="e.g. 8436906519",
+                label_visibility="collapsed",
+                help="In Telegram: open your bot and press Start. If you don't know your Chat ID, talk to @userinfobot and copy the Id number it shows."
             )
+            c1, c2, _ = st.columns([1,1,4])
+            c1.link_button("Open bot", f"https://t.me/{TELEGRAM_BOT_USERNAME}")
+            c2.link_button("ID helper", "https://t.me/userinfobot")
 
-        # Address / Lat / Lon / Radius
-        address = st.text_input("Address (optional)", placeholder="123 Main St, Halifax, NS B3H 2Y9")
+        # Address / geocode (optional)
+        address = st.text_input("Address (optional)", placeholder="123 Main St, Halifax, NS")
+        c3, c4 = st.columns(2)
+        lat = c3.number_input("Latitude", value=46.167500, step=0.000001, format="%.6f")
+        lon = c4.number_input("Longitude", value=-64.750800, step=0.000001, format="%.6f")
+        radius_km = st.number_input("Radius (km)", min_value=1, max_value=200, value=10)
 
-        c_lat, c_lon = st.columns(2)
-        with c_lat:
-            lat = st.number_input("Latitude", value=46.167500, step=0.000001, format="%.6f")
-        with c_lon:
-            lon = st.number_input("Longitude", value=-64.750800, step=0.000001, format="%.6f")
+        submitted = st.form_submit_button("Activate Alerts")
 
-        radius_km = st.number_input("Radius (km)", value=10, step=1, min_value=1, max_value=200)
-
-        st.divider()
-        c_ok, c_cancel = st.columns([1, 1])
-        with c_ok:
-            submit = st.button("Activate Alerts", type="primary", use_container_width=True)
-        with c_cancel:
-            cancel = st.button("Cancel Alerts", use_container_width=True)
-
-    # ---- Validation helpers
-    def _validate_common():
+    if submitted:
+        # Basic validation
         if not email.strip():
-            st.error("Email is required.")
-            return False
-        if channel_label in ("telegram", "both"):
-            cid = chat_id.strip()
-            if not cid:
-                st.error("Telegram Chat ID is required for Telegram/Both.")
-                return False
-            if not CHAT_ID_RE.match(cid):
-                st.error("Telegram Chat ID must be numeric (copy it from @userinfobot).")
-                return False
-        return True
-
-    # ---- Submit (subscribe)
-    if submit:
+            st.error("Please enter your email.")
+            return
+        if channel in ("telegram", "both") and not str(telegramChatId).strip():
+            st.error("Please enter your Telegram Chat ID (or switch channel).")
+            return
         if not N8N_SUBSCRIBE_URL:
-            st.error("Cannot submit: N8N_SUBSCRIBE_URL is not configured.")
-        elif _validate_common():
-            payload = {
-                "email": email.strip().lower(),
-                "lat": float(lat),
-                "lon": float(lon),
-                "radius_km": float(radius_km),
-                "address": address.strip(),
-                "active": True,
-                "channel": channel_label,  # 'email' | 'telegram' | 'both'
-            }
-            if channel_label in ("telegram", "both"):
-                payload["telegramChatId"] = chat_id.strip()
+            st.error("Server configuration missing: N8N_SUBSCRIBE_URL.")
+            return
 
-            ok, msg = _post_json(N8N_SUBSCRIBE_URL, payload)
-            if ok:
-                st.success("You're subscribed. You’ll receive alerts on the channel(s) you selected.")
-            else:
-                st.error(f"Subscribe failed: {msg}")
+        payload = {
+            "email": email.strip(),
+            "address": address.strip(),
+            "lat": float(lat),
+            "lon": float(lon),
+            "radius_km": int(radius_km),
+            "active": True,
+            "channel": channel,                 # "email" | "telegram" | "both"
+            "telegramChatId": str(telegramChatId).strip(),
+        }
 
-    # ---- Cancel (unsubscribe = update active=false)
-    if cancel:
-        if not N8N_SUBSCRIBE_URL:
-            st.error("Cannot cancel: N8N_SUBSCRIBE_URL is not configured.")
-        elif not email.strip():
-            st.error("Email is required to cancel.")
-        else:
-            payload = {
-                "email": email.strip().lower(),
-                "active": False,
-                # Optional: keep last selections so your sheet stays coherent
-                "channel": channel_label,
-            }
-            if channel_label in ("telegram", "both") and chat_id.strip():
-                payload["telegramChatId"] = chat_id.strip()
+        try:
+            r = requests.post(N8N_SUBSCRIBE_URL, json=payload, timeout=15)
+            r.raise_for_status()
+        except Exception as e:
+            st.error(f"Could not register your alert. {e}")
+            return
 
-            ok, msg = _post_json(N8N_SUBSCRIBE_URL, payload)
-            if ok:
-                st.success("Alerts canceled for this email.")
-            else:
-                st.error(f"Cancel failed: {msg}")
+        st.success("You're set! Alerts will be sent via your selected channel(s).")
 
-# Call render_tab_fire_alert() inside your tabs switcher:
-# with tab3:
-#     render_tab_fire_alert()
+# Make sure the tab is actually rendered
+t1, t2, t3 = st.tabs(["Active Fires", "Fire Map", "SAFER Fire Alert"])
+with t3:
+    render_tab_fire_alert()
