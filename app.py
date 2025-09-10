@@ -969,13 +969,16 @@ with t2:
             unsafe_allow_html=True,
         )
 
-# ===== TAB 3: SAFER Fire Alert =====
+# ===== TAB 3: SAFER Fire Alert (with Telegram) =====
 with t3:
     st.subheader("Be SAFER in the Acadian region with a fire alert response for your home address")
     st.write("Enter your **address** (optional). We’ll geocode it to coordinates, or you can set lat/lon manually.")
 
     if not subscribe_url:
         st.warning("Subscribe webhook URL is not configured. Add N8N_SUBSCRIBE_URL in **App → Settings → Secrets**.")
+
+    # You can change this to your bot username or read from an env var if you prefer
+    bot_username = "SaferAlertsBot"
 
     ss = st.session_state
     ss.setdefault("sub_email", "")
@@ -984,10 +987,39 @@ with t3:
     ss.setdefault("sub_lon", -64.7508)
     ss.setdefault("sub_radius", 10)
     ss.setdefault("alerts_active", False)
+    ss.setdefault("sub_channel", "email")          # new
+    ss.setdefault("sub_telegram_chatid", "")       # new
 
     # ---- form ----
     with st.form("sub_form", clear_on_submit=False):
         email = st.text_input("Email", value=ss["sub_email"], placeholder="you@example.com")
+
+        # Channel picker
+        chan_labels = ["Email", "Telegram", "Both"]
+        chan_to_value = {"Email": "email", "Telegram": "telegram", "Both": "both"}
+        value_to_index = {"email": 0, "telegram": 1, "both": 2}
+        chan_label = st.radio(
+            "Channel",
+            chan_labels,
+            index=value_to_index.get(ss["sub_channel"], 0),
+            horizontal=True,
+            help="Choose how you want to receive alerts."
+        )
+        channel = chan_to_value[chan_label]
+
+        # Telegram details only when needed
+        if channel in ("telegram", "both"):
+            tg_cols = st.columns([2, 1, 1])
+            tg_id = tg_cols[0].text_input(
+                "Telegram Chat ID",
+                value=ss["sub_telegram_chatid"],
+                placeholder="e.g. 8436906519",
+                help="Open @userinfobot in Telegram and copy the number shown as 'Id: ...'.",
+            )
+            tg_cols[1].link_button("Open bot", f"https://t.me/{bot_username}", use_container_width=True)
+            tg_cols[2].link_button("ID helper", "https://t.me/userinfobot", use_container_width=True)
+            st.caption("In Telegram: tap **Open bot** and press **Start**. If you don't know your Chat ID, "
+                       "open **@userinfobot** and copy the **Id** number it shows.")
 
         c_addr = st.columns([4, 1])
         address = c_addr[0].text_input(
@@ -1008,6 +1040,9 @@ with t3:
     # persist
     ss["sub_email"], ss["sub_address"] = email, address
     ss["sub_lat"], ss["sub_lon"], ss["sub_radius"] = float(lat), float(lon), int(radius)
+    ss["sub_channel"] = channel
+    if channel in ("telegram", "both"):
+        ss["sub_telegram_chatid"] = tg_id.strip() if "tg_id" in locals() else ss.get("sub_telegram_chatid", "")
 
     # geocode button handler
     if geocode_clicked:
@@ -1036,7 +1071,13 @@ with t3:
                     "lon": float(ss["sub_lon"]),
                     "radius_km": int(ss["sub_radius"]),
                     "active": not bool(ss.get("alerts_active")),
+                    "channel": ss["sub_channel"],                     # NEW: pass channel
                 }
+                # Include Telegram Chat ID if required/available
+                if ss["sub_channel"] in ("telegram", "both") and ss.get("sub_telegram_chatid"):
+                    # send as string; your n8n flow will coerce if needed
+                    body["telegramChatId"] = ss["sub_telegram_chatid"]
+
                 res = post_json(subscribe_url, body, shared_secret or None, timeout=timeout_sec)
                 ok = bool(res) and (res.get("ok") is True or res.get("status") in ("ok", "success"))
                 ss["alerts_active"] = not ss.get("alerts_active") if ok else ss.get("alerts_active")
