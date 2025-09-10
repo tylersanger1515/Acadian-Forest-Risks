@@ -970,87 +970,79 @@ with t2:
         )
 
 # --- TAB 3: SAFER Fire Alert --------------------------------------------------
-
-import os
-import requests
-import streamlit as st
+import os, requests, streamlit as st
 
 N8N_SUBSCRIBE_URL = st.secrets.get("N8N_SUBSCRIBE_URL") or os.environ.get("N8N_SUBSCRIBE_URL")
-TELEGRAM_BOT_USERNAME = st.secrets.get("TELEGRAM_BOT_USERNAME", "SaferAlertsBot").lstrip("@")
+BOT = (st.secrets.get("TELEGRAM_BOT_USERNAME") or "SaferAlertsBot").lstrip("@")
 
-def render_tab_fire_alert():
-    st.subheader("Be SAFER in the Acadian region with a fire alert response for your home address")
+def render_tab3():
+    st.markdown("### Tab 3 v3 — SAFER Fire Alert")
 
-    with st.form("safer_subscribe"):
-        # Email
-        email = st.text_input("Email")
+    with st.form("safer_form"):
+        email = st.text_input("Email", key="t3_email")
 
-        # Channel selection
         channel = st.radio(
             "Channel",
-            options=["email", "telegram", "both"],
+            ["email", "telegram", "both"],
             index=0,
             horizontal=True,
+            key="t3_channel",
             format_func=lambda x: x.capitalize(),
-            help="Choose how you want to receive alerts."
         )
 
-        # Telegram helper inputs if needed
-        telegramChatId = ""
+        # Telegram block shows as soon as Telegram/Both is selected
         if channel in ("telegram", "both"):
-            st.markdown("**Telegram Chat ID**")
-            telegramChatId = st.text_input(
+            st.markdown("**Telegram**")
+            tg_id = st.text_input(
                 "Telegram Chat ID",
                 placeholder="e.g. 8436906519",
-                label_visibility="collapsed",
-                help="In Telegram: open your bot and press Start. If you don't know your Chat ID, talk to @userinfobot and copy the Id number it shows."
+                key="t3_tg_id",
+                help="Open your bot and press Start. If you don't know your Chat ID, talk to @userinfobot and copy the Id it shows.",
             )
-            c1, c2, _ = st.columns([1,1,4])
-            c1.link_button("Open bot", f"https://t.me/{TELEGRAM_BOT_USERNAME}")
+            c1, c2, _ = st.columns([1, 1, 4])
+            c1.link_button("Open bot", f"https://t.me/{BOT}")
             c2.link_button("ID helper", "https://t.me/userinfobot")
+        else:
+            tg_id = ""
 
-        # Address / geocode (optional)
-        address = st.text_input("Address (optional)", placeholder="123 Main St, Halifax, NS")
-        c3, c4 = st.columns(2)
-        lat = c3.number_input("Latitude", value=46.167500, step=0.000001, format="%.6f")
-        lon = c4.number_input("Longitude", value=-64.750800, step=0.000001, format="%.6f")
-        radius_km = st.number_input("Radius (km)", min_value=1, max_value=200, value=10)
+        address = st.text_input("Address (optional)", placeholder="123 Main St, Halifax, NS", key="t3_addr")
+        c1, c2 = st.columns(2)
+        lat = c1.number_input("Latitude", value=46.167500, step=0.000001, format="%.6f", key="t3_lat")
+        lon = c2.number_input("Longitude", value=-64.750800, step=0.000001, format="%.6f", key="t3_lon")
+        radius_km = st.number_input("Radius (km)", min_value=1, max_value=200, value=10, key="t3_radius")
 
         submitted = st.form_submit_button("Activate Alerts")
 
     if submitted:
-        # Basic validation
         if not email.strip():
-            st.error("Please enter your email.")
+            st.error("Email is required.")
             return
-        if channel in ("telegram", "both") and not str(telegramChatId).strip():
-            st.error("Please enter your Telegram Chat ID (or switch channel).")
+        if channel in ("telegram", "both") and not tg_id.strip():
+            st.error("Telegram Chat ID is required for Telegram or Both.")
             return
         if not N8N_SUBSCRIBE_URL:
-            st.error("Server configuration missing: N8N_SUBSCRIBE_URL.")
+            st.error("N8N_SUBSCRIBE_URL not configured.")
             return
 
         payload = {
             "email": email.strip(),
+            "channel": channel,                # "email" | "telegram" | "both"
+            "telegramChatId": tg_id.strip(),   # <— matches your n8n mapping
             "address": address.strip(),
             "lat": float(lat),
             "lon": float(lon),
             "radius_km": int(radius_km),
             "active": True,
-            "channel": channel,                 # "email" | "telegram" | "both"
-            "telegramChatId": str(telegramChatId).strip(),
         }
 
         try:
             r = requests.post(N8N_SUBSCRIBE_URL, json=payload, timeout=15)
             r.raise_for_status()
+            st.success("Subscribed. You’ll receive alerts via the selected channel(s).")
         except Exception as e:
-            st.error(f"Could not register your alert. {e}")
-            return
+            st.error(f"Subscription failed: {e}")
 
-        st.success("You're set! Alerts will be sent via your selected channel(s).")
-
-# Make sure the tab is actually rendered
+# Ensure the tab actually renders
 t1, t2, t3 = st.tabs(["Active Fires", "Fire Map", "SAFER Fire Alert"])
 with t3:
-    render_tab_fire_alert()
+    render_tab3()
