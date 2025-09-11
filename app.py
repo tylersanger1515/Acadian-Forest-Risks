@@ -991,7 +991,7 @@ with st.form("sub_form", clear_on_submit=False):
             "Telegram Chat ID",
             placeholder="e.g. 8436906519",
             key="sub_telegram_chat_id",
-            help="Start @SaferAlertsBot, then DM @UserInfoBot to get your numeric chat ID.",
+            help="Open @SaferAlertsBot and type /start, If you don't know your chat ID, open @UserInfoBot and type /start, copy the ID it shows for your Telegram account",
         )
     with tg_cols[1]:
         # EXACT wording requested
