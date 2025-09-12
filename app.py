@@ -970,218 +970,142 @@ with t2:
 
 # ----------------------- TAB 3 — SAFER Fire Alert ---------------------------
 with t3:
-    # Use session state alias
     ss = st.session_state
 
-    # Defaults (do not change UI)
+    # Defaults
     ss.setdefault("sub_email", "")
-    ss.setdefault("sub_channel", "Email")            # Email | Telegram | Both
-    ss.setdefault("sub_telegram_chat_id", "")
     ss.setdefault("sub_address", "")
     ss.setdefault("sub_lat", 46.167500)
     ss.setdefault("sub_lon", -64.750800)
-    ss.setdefault("sub_radius_km", 10)
+    ss.setdefault("sub_radius", 10)
+    ss.setdefault("sub_channel", "email")   # 'email' | 'telegram' | 'both'
+    ss.setdefault("sub_tg_id", "")
     ss.setdefault("alerts_active", False)
 
-    # ------------------ FORM (UI unchanged) ------------------
     with st.form("sub_form", clear_on_submit=False):
-        email = st.text_input(
-            "Email",
-            placeholder="you@example.com",
-            key="sub_email"
-        )
+        # Email
+        email = st.text_input("Email", value=ss["sub_email"], placeholder="you@example.com")
 
+        # Channel (stored lowercase, shown Title Case)
         channel = st.radio(
             "Channel",
-            ["Email", "Telegram", "Both"],
+            options=["email", "telegram", "both"],
+            index={"email": 0, "telegram": 1, "both": 2}[ss["sub_channel"]],
             horizontal=True,
-            index=["Email", "Telegram", "Both"].index(ss.get("sub_channel", "Email")),
-            key="sub_channel"
+            format_func=lambda x: x.title(),
         )
 
-        tg_cols = st.columns([3, 1.2, 1.2])
-        with tg_cols[0]:
-            telegram_chat_id = st.text_input(
-                "Telegram Chat ID",
-                placeholder="e.g. 8436906519",
-                key="sub_telegram_chat_id",
-                help=(
-                    "Open @SaferAlertsBot and type /start to get proximity alerts. "
-                    "If you don't know your chat ID, open @UserInfoBot and type /start, "
-                    "then copy the ID it shows for your Telegram account."
+        # Telegram
+        tg_id = ss["sub_tg_id"]
+        if channel in ("telegram", "both"):
+            tg_cols = st.columns([3, 1.2, 1.2])
+            with tg_cols[0]:
+                tg_id = st.text_input(
+                    "Telegram Chat ID",
+                    value=ss["sub_tg_id"],
+                    placeholder="e.g. 8436906519",
+                    help=("Open @SaferAlertsBot and press Start. If you don't know your Chat ID, "
+                          "open @UserInfoBot and copy the ID it shows.")
                 )
-            )
-        with tg_cols[1]:
-            st.markdown(
-                '<div style="margin-top:30px;"><a href="https://t.me/SaferAlertsBot" target="_blank">Open @SaferAlertsBot</a></div>',
-                unsafe_allow_html=True,
-            )
-        with tg_cols[2]:
-            st.markdown(
-                '<div style="margin-top:30px;"><a href="https://t.me/userinfobot" target="_blank">Open @UserInfoBot</a></div>',
-                unsafe_allow_html=True,
-            )
+            with tg_cols[1]:
+                st.markdown('<div style="margin-top:30px;"><a href="https://t.me/SaferAlertsBot" target="_blank">Open @SaferAlertsBot</a></div>', unsafe_allow_html=True)
+            with tg_cols[2]:
+                st.markdown('<div style="margin-top:30px;"><a href="https://t.me/userinfobot" target="_blank">Open @UserInfoBot</a></div>', unsafe_allow_html=True)
 
-        addr_cols = st.columns([3, 1])
-        with addr_cols[0]:
-            address = st.text_input(
-                "Address (optional)",
-                placeholder="67a Long Shore Rd, Conception Bay South, NL A1X 6A6, Canada",
-                key="sub_address",
-            )
-        with addr_cols[1]:
-            geocode_clicked = st.form_submit_button("Geocode", key="geocode_btn")
-
-        # IMPORTANT: no keys on these number_inputs to avoid key-write conflicts
-        lat_col, lon_col = st.columns(2)
-        with lat_col:
-            lat = st.number_input(
-                "Latitude",
-                value=float(ss.get("sub_lat", 46.167500)),
-                step=0.0001,
-                format="%.6f"
-            )
-        with lon_col:
-            lon = st.number_input(
-                "Longitude",
-                value=float(ss.get("sub_lon", -64.750800)),
-                step=0.0001,
-                format="%.6f"
-            )
-
-        radius_km = st.number_input(
-            "Radius (km)",
-            value=int(ss.get("sub_radius_km", 10)),
-            step=1
+        # Address + Geocode (NO key on the text_input)
+        c_addr = st.columns([4, 1])
+        address = c_addr[0].text_input(
+            "Address (optional)",
+            value=ss["sub_address"],
+            placeholder="123 Main St, Halifax, NS B3H 2Y9",
+        )
+        geocode_clicked = c_addr[1].form_submit_button(
+            "Geocode",
+            use_container_width=True,
+            disabled=not bool(opencage_key or google_key),
         )
 
-        # Button (left) + schedule blurb (right) — emojis unchanged
-        col_btn, col_info = st.columns([1, 2])
-        with col_btn:
-            btn_label = "Cancel Alerts" if ss.get("alerts_active") else "Activate Alerts"
-            toggle_clicked = st.form_submit_button(
-                btn_label,
-                key="alerts_btn",
-                type="primary",
-                disabled=not bool(subscribe_url),
-            )
-        with col_info:
-            st.markdown(
-                """
-                <div style="margin-top:6px;font-size:.95rem;line-height:1.4">
-                  🕒 <b>Proximity Alerts</b> active every hour<br/>
-                  🕒 <b>Daily Fire table/CSV file</b> active every day at 12 noon Atlantic Standard Time
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+        # Lat/Lon/Radius (NO keys)
+        colA, colB = st.columns(2)
+        lat = colA.number_input("Latitude", value=float(ss["sub_lat"]), step=0.0001, format="%.6f")
+        lon = colB.number_input("Longitude", value=float(ss["sub_lon"]), step=0.0001, format="%.6f")
+        radius = st.number_input("Radius (km)", min_value=1, max_value=250, value=int(ss["sub_radius"]), step=1)
 
-    # Persist user edits from number_inputs after the form renders
+        # Button (label toggles, copy unchanged)
+        btn_label = "Cancel Alerts" if ss.get("alerts_active") else "Activate Alerts"
+        toggle_clicked = st.form_submit_button(btn_label, type="primary", disabled=not bool(subscribe_url))
+
+        # right-side schedule blurbs (unchanged emojis/text)
+        st.markdown(
+            """
+            <div style="margin-top:6px;font-size:.95rem;line-height:1.4">
+              🕒 <b>Proximity Alerts</b> active every hour<br/>
+              🕒 <b>Daily Fire table/CSV file</b> active every day at 12 noon Atlantic Standard Time
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # Persist edits AFTER the form to avoid widget key conflicts
+    ss["sub_email"] = email
+    ss["sub_address"] = address
     ss["sub_lat"] = float(lat)
     ss["sub_lon"] = float(lon)
-    ss["sub_radius_km"] = int(radius_km)
+    ss["sub_radius"] = int(radius)
+    ss["sub_channel"] = channel
+    ss["sub_tg_id"] = tg_id
 
-    # ------------------ HANDLERS ------------------
-
-    # Geocode: OpenCage first, then Google; updates session state safely
+    # --- Geocode handler (updates state, then reruns so the inputs show the new values) ---
     if geocode_clicked:
-        addr = (ss.get("sub_address") or "").strip()
-        if not addr:
-            st.warning("Type an address first, then click Geocode.")
+        if not (opencage_key or google_key):
+            st.error("Please add at least one geocoding key (OpenCage or Google) in Settings → Secrets.")
+        elif not (address or "").strip():
+            st.error("Please enter an address to geocode.")
         else:
             try:
-                lat_val = None
-                lon_val = None
-                formatted = None
-                source = None
-
-                oc_key = st.secrets.get("OPENCAGE_API_KEY")
-                if oc_key and lat_val is None:
-                    r = requests.get(
-                        "https://api.opencagedata.com/geocode/v1/json",
-                        params={"q": addr, "key": oc_key, "limit": 1},
-                        timeout=15,
-                    )
-                    j = r.json()
-                    if j.get("results"):
-                        g = j["results"][0]
-                        lat_val = float(g["geometry"]["lat"])
-                        lon_val = float(g["geometry"]["lng"])
-                        formatted = g.get("formatted")
-                        source = "OpenCage"
-
-                g_key = st.secrets.get("GOOGLE_MAPS_API_KEY")
-                if g_key and lat_val is None:
-                    r = requests.get(
-                        "https://maps.googleapis.com/maps/api/geocode/json",
-                        params={"address": addr, "key": g_key},
-                        timeout=15,
-                    )
-                    j = r.json()
-                    if j.get("status") == "OK" and j.get("results"):
-                        g = j["results"][0]
-                        loc = g["geometry"]["location"]
-                        lat_val = float(loc["lat"])
-                        lon_val = float(loc["lng"])
-                        formatted = g.get("formatted_address")
-                        source = "Google"
-
-                if lat_val is not None and lon_val is not None:
-                    ss.update({
-                        "sub_lat": round(lat_val, 6),
-                        "sub_lon": round(lon_val, 6),
-                        "sub_address": formatted or ss.get("sub_address"),
-                    })
-                    st.success(f"Geocoded via {source or 'provider'}")
+                g = geocode_address(address, opencage_key, google_key)
+                if not g:
+                    st.error("No coordinates found for that address.")
                 else:
-                    st.error("Geocoding failed. Add province/postal code and try again.")
+                    g_lat, g_lon, g_fmt, g_src = g
+                    st.session_state.update({
+                        "sub_lat": round(float(g_lat), 6),
+                        "sub_lon": round(float(g_lon), 6),
+                        "sub_address": g_fmt or address,
+                    })
+                    st.success(f"Coordinates filled from address (via {g_src}).")
+                    st.experimental_rerun()
             except Exception as e:
                 st.error(f"Geocoding error: {e}")
 
-    # Activate / Cancel webhook call (n8n)
-    if toggle_clicked:
-        if not subscribe_url:
-            st.error("Subscription webhook URL is not set.")
+    # --- Activate / Cancel webhook call (n8n) ---
+    if toggle_clicked and subscribe_url:
+        if not _valid_email(email):
+            st.error("Please enter a valid email.")
+        elif channel in ("telegram", "both") and not re.fullmatch(r"\d{5,20}", (tg_id or "").strip()):
+            st.error("Enter your Telegram Chat ID (digits only). Open @userinfobot to get it.")
         else:
             try:
-                chan = ss.get("sub_channel", "Email")
-                want_email = chan in ("Email", "Both")
-                want_tg    = chan in ("Telegram", "Both")
-
-                if want_email and not (ss.get("sub_email") or "").strip():
-                    st.error("Please enter an email address.")
-                elif want_tg and not (ss.get("sub_telegram_chat_id") or "").strip():
-                    st.error("Please enter your Telegram Chat ID.")
+                body = {
+                    "email": ss["sub_email"],
+                    "lat": float(ss["sub_lat"]),
+                    "lon": float(ss["sub_lon"]),
+                    "radius_km": int(ss["sub_radius"]),
+                    "active": not bool(ss.get("alerts_active")),
+                    "channel": ss["sub_channel"],                 # 'email' | 'telegram' | 'both'
+                    "telegramChatId": (ss["sub_tg_id"] or "").strip(),
+                    "address": ss["sub_address"],                 # optional
+                    "linkedAt": (dt.datetime.utcnow().isoformat() if (ss["sub_tg_id"] or "").strip() else ""),
+                }
+                headers = {"X-API-KEY": shared_secret} if shared_secret else None
+                res = post_json(subscribe_url, body, headers and shared_secret, timeout=timeout_sec)
+                ok = bool(res) and (res.get("ok") is True or res.get("status") in ("ok", "success"))
+                if ok:
+                    ss["alerts_active"] = not ss.get("alerts_active")
+                    st.success("Alerts " + ("activated" if ss["alerts_active"] else "canceled") + ".")
                 else:
-                    payload = {
-                        "channel": chan,
-                        "email": (ss.get("sub_email") or "").strip() or None,
-                        "telegram_chat_id": (ss.get("sub_telegram_chat_id") or "").strip() or None,
-                        "address": (ss.get("sub_address") or "").strip() or None,
-                        "lat": float(ss.get("sub_lat")),
-                        "lon": float(ss.get("sub_lon")),
-                        "radius_km": int(ss.get("sub_radius_km") or 10),
-                        "source": "streamlit-tab3",
-                    }
-
-                    headers = {}
-                    secret = st.secrets.get("N8N_SHARED_SECRET")
-                    if secret:
-                        headers["X-API-KEY"] = secret
-
-                    if ss.get("alerts_active"):
-                        r = requests.post(f"{subscribe_url}/cancel", json=payload, headers=headers, timeout=20)
-                        if r.ok:
-                            ss["alerts_active"] = False
-                            st.success("Alerts cancelled.")
-                        else:
-                            st.error(f"Cancel failed: {r.status_code} {r.text[:300]}")
-                    else:
-                        r = requests.post(subscribe_url, json=payload, headers=headers, timeout=20)
-                        if r.ok:
-                            ss["alerts_active"] = True
-                            st.success("Alerts activated.")
-                        else:
-                            st.error(f"Activate failed: {r.status_code} {r.text[:300]}")
+                    st.warning("Request sent, but the server did not confirm success.")
+            except requests.HTTPError as e:
+                st.error(f"HTTP error: {e.response.status_code} {e.response.text[:400]}")
             except Exception as e:
-                st.error(f"Request error: {e}")
+                st.error(f"Failed to toggle alerts: {e}")
