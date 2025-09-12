@@ -974,95 +974,95 @@ with t2:
 with t3:
     with st.form("sub_form", clear_on_submit=False):
 
-    email = st.text_input("Email", placeholder="you@example.com", key="sub_email")
+        email = st.text_input("Email", placeholder="you@example.com", key="sub_email")
 
-    channel = st.radio(
-        "Channel",
-        ["Email", "Telegram", "Both"],
-        horizontal=True,
-        key="sub_channel",
-        index=ss.get("sub_channel_index", 0) if "sub_channel_index" in ss else 0,
-    )
-
-    # Telegram Chat ID + helper links (tooltip kept via help=)
-    tg_cols = st.columns([3, 1.2, 1.2])
-    with tg_cols[0]:
-        telegram_chat_id = st.text_input(
-            "Telegram Chat ID",
-            placeholder="e.g. 8436906519",
-            key="sub_telegram_chat_id",
-            help="Open @SaferAlertsBot and type /start to get proximity alerts, If you don't know your chat ID, open @UserInfoBot and type /start, copy the ID it shows for your Telegram account",
-        )
-    with tg_cols[1]:
-        # EXACT wording requested
-        st.markdown(
-            '<div style="margin-top:30px;"><a href="https://t.me/SaferAlertsBot" target="_blank">Open @SaferAlertsBot</a></div>',
-            unsafe_allow_html=True,
-        )
-    with tg_cols[2]:
-        # EXACT wording requested
-        st.markdown(
-            '<div style="margin-top:30px;"><a href="https://t.me/userinfobot" target="_blank">Open @UserInfoBot</a></div>',
-            unsafe_allow_html=True,
+        channel = st.radio(
+            "Channel",
+            ["Email", "Telegram", "Both"],
+            horizontal=True,
+            key="sub_channel",
+            index=ss.get("sub_channel_index", 0) if "sub_channel_index" in ss else 0,
         )
 
-    # Address + Geocode button on the right (unchanged behavior)
-    addr_cols = st.columns([3, 1])
-    with addr_cols[0]:
-        address = st.text_input(
-            "Address (optional)",
-            placeholder="123 Main St, Halifax, NS B3H 2Y9",
-            key="sub_address",
-        )
-    with addr_cols[1]:
-        # keep as a form submit button so it works inside the form
-        geocode_clicked = st.form_submit_button("Geocode", key="geocode_btn")
+        # Telegram Chat ID + helper links (tooltip kept via help=)
+        tg_cols = st.columns([3, 1.2, 1.2])
+        with tg_cols[0]:
+            telegram_chat_id = st.text_input(
+                "Telegram Chat ID",
+                placeholder="e.g. 8436906519",
+                key="sub_telegram_chat_id",
+                help="Open @SaferAlertsBot and type /start to get proximity alerts, If you don't know your chat ID, open @UserInfoBot and type /start, copy the ID it shows for your Telegram account",
+            )
+        with tg_cols[1]:
+            # EXACT wording requested
+            st.markdown(
+                '<div style="margin-top:30px;"><a href="https://t.me/SaferAlertsBot" target="_blank">Open @SaferAlertsBot</a></div>',
+                unsafe_allow_html=True,
+            )
+        with tg_cols[2]:
+            # EXACT wording requested
+            st.markdown(
+                '<div style="margin-top:30px;"><a href="https://t.me/userinfobot" target="_blank">Open @UserInfoBot</a></div>',
+                unsafe_allow_html=True,
+            )
 
-    # Lat / Lon
-    lat_col, lon_col = st.columns(2)
-    with lat_col:
-        lat = st.number_input(
-            "Latitude",
-            value=ss.get("sub_lat", 46.167500),
-            format="%.6f",
-            key="sub_lat",
-        )
-    with lon_col:
-        lon = st.number_input(
-            "Longitude",
-            value=ss.get("sub_lon", -64.750800),
-            format="%.6f",
-            key="sub_lon",
+        # Address + Geocode button on the right (unchanged behavior)
+        addr_cols = st.columns([3, 1])
+        with addr_cols[0]:
+            address = st.text_input(
+                "Address (optional)",
+                placeholder="123 Main St, Halifax, NS B3H 2Y9",
+                key="sub_address",
+            )
+        with addr_cols[1]:
+            # keep as a form submit button so it works inside the form
+            geocode_clicked = st.form_submit_button("Geocode", key="geocode_btn")
+
+        # Lat / Lon
+        lat_col, lon_col = st.columns(2)
+        with lat_col:
+            lat = st.number_input(
+                "Latitude",
+                value=ss.get("sub_lat", 46.167500),
+                format="%.6f",
+                key="sub_lat",
+            )
+        with lon_col:
+            lon = st.number_input(
+                "Longitude",
+                value=ss.get("sub_lon", -64.750800),
+                format="%.6f",
+                key="sub_lon",
+            )
+
+        radius_km = st.number_input(
+            "Radius (km)",
+            value=ss.get("sub_radius_km", 10),
+            step=1,
+            key="sub_radius_km",
         )
 
-    radius_km = st.number_input(
-        "Radius (km)",
-        value=ss.get("sub_radius_km", 10),
-        step=1,
-        key="sub_radius_km",
-    )
+        # Button (left) + schedule blurb (right) — ONLY UI addition you requested
+        col_btn, col_info = st.columns([1, 2])
+        with col_btn:
+            btn_label = "Cancel Alerts" if ss.get("alerts_active") else "Activate Alerts"
+            toggle_clicked = st.form_submit_button(
+                btn_label,
+                key="alerts_btn",
+                type="primary",
+                disabled=not bool(subscribe_url),
+            )
+        with col_info:
+            st.markdown(
+                """
+                <div style="margin-top:6px;font-size:.95rem;line-height:1.4">
+                  🕒 <b>Proximity Alerts</b> active every hour<br/>
+                  🕒 <b>Daily Fire table/CSV file</b> active every day at 12 noon Atlantic Standard Time
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-    # Button (left) + schedule blurb (right) — ONLY UI addition you requested
-    col_btn, col_info = st.columns([1, 2])
-    with col_btn:
-        btn_label = "Cancel Alerts" if ss.get("alerts_active") else "Activate Alerts"
-        toggle_clicked = st.form_submit_button(
-            btn_label,
-            key="alerts_btn",
-            type="primary",
-            disabled=not bool(subscribe_url),
-        )
-    with col_info:
-        st.markdown(
-            """
-            <div style="margin-top:6px;font-size:.95rem;line-height:1.4">
-              🕒 <b>Proximity Alerts</b> active every hour<br/>
-              🕒 <b>Daily Fire table/CSV file</b> active every day at 12 noon Atlantic Standard Time
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-# NOTE: keep your existing handlers below:
-# - if geocode_clicked: (run your geocoding for `address` → set ss.sub_lat/ss.sub_lon)
-# - if toggle_clicked: (activate/cancel using your existing subscribe_url logic)
+    # NOTE: keep your existing handlers below:
+    # - if geocode_clicked: (run your geocoding for `address` → set ss.sub_lat/ss.sub_lon)
+    # - if toggle_clicked: (activate/cancel using your existing subscribe_url logic)
