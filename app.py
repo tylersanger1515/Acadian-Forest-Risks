@@ -1042,7 +1042,7 @@ with t3:
             key="sub_radius_km",
         )
 
-        # Button (left) + schedule blurb (right) — ONLY UI addition you requested
+        # Button (left) + schedule blurb (right)
         col_btn, col_info = st.columns([1, 2])
         with col_btn:
             btn_label = "Cancel Alerts" if ss.get("alerts_active") else "Activate Alerts"
@@ -1063,6 +1063,111 @@ with t3:
                 unsafe_allow_html=True,
             )
 
-    # NOTE: keep your existing handlers below:
-    # - if geocode_clicked: (run your geocoding for `address` → set ss.sub_lat/ss.sub_lon)
-    # - if toggle_clicked: (activate/cancel using your existing subscribe_url logic)
+    # ----------------------- HANDLERS (added) -----------------------
+
+    # Geocode handler: tries OpenCage first, then Google Maps (no new imports)
+    if geocode_clicked:
+        addr = (ss.get("sub_address") or "").strip()
+        if not addr:
+            st.warning("Type an address first, then click Geocode.")
+        else:
+            try:
+                lat_val = None
+                lon_val = None
+                formatted = None
+                source = None
+
+                # OpenCage
+                oc_key = st.secrets.get("OPENCAGE_API_KEY")
+                if oc_key and not lat_val:
+                    r = requests.get(
+                        "https://api.opencagedata.com/geocode/v1/json",
+                        params={"q": addr, "key": oc_key, "limit": 1},
+                        timeout=15,
+                    )
+                    j = r.json()
+                    if j.get("results"):
+                        g = j["results"][0]
+                        lat_val = float(g["geometry"]["lat"])
+                        lon_val = float(g["geometry"]["lng"])
+                        formatted = g.get("formatted")
+                        source = "OpenCage"
+
+                # Google Maps
+                g_key = st.secrets.get("GOOGLE_MAPS_API_KEY")
+                if g_key and not lat_val:
+                    r = requests.get(
+                        "https://maps.googleapis.com/maps/api/geocode/json",
+                        params={"address": addr, "key": g_key},
+                        timeout=15,
+                    )
+                    j = r.json()
+                    if j.get("status") == "OK" and j.get("results"):
+                        g = j["results"][0]
+                        loc = g["geometry"]["location"]
+                        lat_val = float(loc["lat"])
+                        lon_val = float(loc["lng"])
+                        formatted = g.get("formatted_address")
+                        source = "Google"
+
+                if lat_val is not None and lon_val is not None:
+                    ss["sub_lat"] = round(lat_val, 6)
+                    ss["sub_lon"] = round(lon_val, 6)
+                    if formatted:
+                        ss["sub_address"] = formatted
+                    st.success(f"Geocoded via {source or 'provider'}")
+                    st.rerun()
+                else:
+                    st.error("Geocoding failed. Add province/postal code and try again.")
+            except Exception as e:
+                st.error(f"Geocoding error: {e}")
+
+    # Activate/Cancel Alerts handler
+    if toggle_clicked:
+        if not subscribe_url:
+            st.error("Subscription webhook URL is not set.")
+        else:
+            try:
+                chan = ss.get("sub_channel", "Email")
+                want_email = chan in ("Email", "Both")
+                want_tg    = chan in ("Telegram", "Both")
+
+                # basic validation
+                if want_email and not (ss.get("sub_email") or "").strip():
+                    st.error("Please enter an email address.")
+                elif want_tg and not (ss.get("sub_telegram_chat_id") or "").strip():
+                    st.error("Please enter your Telegram Chat ID.")
+                else:
+                    payload = {
+                        "channel": chan,
+                        "email": (ss.get("sub_email") or "").strip() or None,
+                        "telegram_chat_id": (ss.get("sub_telegram_chat_id") or "").strip() or None,
+                        "address": (ss.get("sub_address") or "").strip() or None,
+                        "lat": float(ss.get("sub_lat")),
+                        "lon": float(ss.get("sub_lon")),
+                        "radius_km": int(ss.get("sub_radius_km") or 10),
+                        "source": "streamlit-tab3",
+                    }
+
+                    headers = {}
+                    secret = st.secrets.get("N8N_SHARED_SECRET")
+                    if secret:
+                        headers["X-API-KEY"] = secret
+
+                    if ss.get("alerts_active"):
+                        # cancel (change path if your n8n expects a different URL)
+                        r = requests.post(f"{subscribe_url}/cancel", json=payload, headers=headers, timeout=20)
+                        if r.ok:
+                            ss["alerts_active"] = False
+                            st.success("Alerts cancelled.")
+                        else:
+                            st.error(f"Cancel failed: {r.status_code} {r.text[:300]}")
+                    else:
+                        r = requests.post(subscribe_url, json=payload, headers=headers, timeout=20)
+                        if r.ok:
+                            ss["alerts_active"] = True
+                            st.success("Alerts activated.")
+                        else:
+                            st.error(f"Activate failed: {r.status_code} {r.text[:300]}")
+            except Exception as e:
+                st.error(f"Request error: {e}")
