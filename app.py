@@ -411,7 +411,6 @@ with t1:
         examples = [
             "which fires are out of control?",
             "largest in NB",
-            "when did fire 68622 start?",
             "total hectares burned in NS",
             "fires older than 10 days",
             "fires between 100 and 500 ha in NL",
