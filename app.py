@@ -971,7 +971,8 @@ with t2:
 # ----------------------- TAB 3 — SAFER Fire Alert ---------------------------
 # assumes: ss = st.session_state and subscribe_url already defined
 
-with st.form("sub_form", clear_on_submit=False):
+with t3:
+    with st.form("sub_form", clear_on_submit=False):
 
     email = st.text_input("Email", placeholder="you@example.com", key="sub_email")
 
